@@ -5,9 +5,9 @@ From each spectrum, the code extracts:
 
 - carrier temperature `T`
 - quasi-Fermi level splitting `Delta mu` (QFLS)
-- optional derived quantities under Maxwell-Boltzmann assumptions: `mu_e`, `mu_h`, and carrier density `n`
+- derived quantities under Maxwell-Boltzmann assumptions: `mu_e`, `mu_h`, and carrier density `n`
 
-It also generates publication-style figures for quality control and trend analysis versus excitation intensity.
+It also generates figures for quality control and trend analysis versus excitation intensity.
 
 ## 1) Scientific objective
 
@@ -17,14 +17,14 @@ Each spectrum is a photon-energy distribution and contains information about:
 - how hot the carrier population is (`T`)
 - how far the electron-hole system is from equilibrium (`Delta mu`)
 
-The practical workflow is:
+The workflow is:
 
 1. visualize all spectra
 2. identify a high-energy domain where the linearized GPL is valid
 3. fit each spectrum in that domain
 4. compare extracted parameters across excitation intensity
 
-## 2) Physics background (intuitive)
+## 2) Physics
 
 In steady-state PL, emitted intensity is governed by the generalized Planck law:
 
@@ -47,6 +47,46 @@ Important consequence:
 
 - if `A0` is not independently calibrated, absolute `Delta mu` is an "effective" value
 - temperature extraction from slope is much less sensitive to that offset
+
+### How `mu_e`, `mu_h`, and `n` are obtained from `T` and `Delta mu`
+
+After extracting `T` and `Delta mu` from the PL fit, the code computes carrier statistics using:
+
+- the convention from your notes: `Delta mu = mu_e + mu_h`
+- electroneutrality: `n_e = n_h`
+- parabolic-band, Maxwell-Boltzmann (MB) expressions
+
+The effective density of states are:
+
+`N_c(T) = 2 * [(m_e^* k_B T)/(2 pi hbar^2)]^(3/2)`
+
+`N_v(T) = 2 * [(m_h^* k_B T)/(2 pi hbar^2)]^(3/2)`
+
+Using the mid-gap energy reference (`E_c = +E_g/2`, `E_v = -E_g/2`), MB carrier densities are:
+
+`n_e = N_c * exp[(mu_e - E_g/2)/(k_B T)]`
+
+`n_h = N_v * exp[(mu_h - E_g/2)/(k_B T)]`
+
+Imposing `n_e = n_h` gives:
+
+`mu_e - mu_h = k_B T * ln(N_c/N_v)`
+
+Combining this with `Delta mu = mu_e + mu_h` yields:
+
+`mu_e = 0.5 * [Delta mu - k_B T ln(N_c/N_v)]`
+
+`mu_h = 0.5 * [Delta mu + k_B T ln(N_c/N_v)]`
+
+Finally, carrier density is:
+
+`n = n_e = n_h = N_c * exp[(mu_e - E_g/2)/(k_B T)]`
+
+Implementation details:
+
+- in code, energies are handled in SI during exponentials and converted to eV for reporting
+- final `n` is reported in `cm^-3` (converted from `m^-3`)
+- this is an MB approximation; for highly degenerate regimes, a full Fermi-Dirac treatment is more accurate
 
 ## 3) What the code does end-to-end
 
