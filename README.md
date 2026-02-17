@@ -174,7 +174,3 @@ Before trusting trends, inspect:
 - propagate fit uncertainty to confidence intervals on `T`, `Delta mu`, and `n`
 - add robust regression options (e.g., weighted fits in low-SNR tails)
 - add batch support for multiple input files and automated report generation
-
----
-
-If you want this README adapted to a specific journal workflow (methods section style, SI-ready equations, figure naming convention), that can be added directly.
