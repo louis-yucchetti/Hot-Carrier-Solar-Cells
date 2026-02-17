@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import cm
 from matplotlib.colors import LogNorm
+from matplotlib.ticker import AutoMinorLocator, LogLocator, NullFormatter
 
 
 # ----------------------------- User-tunable settings -----------------------------
@@ -28,6 +29,10 @@ WINDOW_T_MIN_K = 150.0
 WINDOW_T_MAX_K = 1200.0
 WINDOW_LENGTH_WEIGHT = 2.0e-4
 WINDOW_HIGH_ENERGY_WEIGHT = 2.0e-4
+
+# Figure export/style
+SAVE_DPI = 450
+EXPORT_PDF = True
 
 # A0 is usually unknown in the simplified linear fit.
 # If left at 1.0, reported QFLS is an effective value (offset absorbed in A0).
@@ -94,6 +99,65 @@ class FitResult:
     mu_e_ev: float
     mu_h_ev: float
     carrier_density_cm3: float
+
+
+def setup_plot_style() -> None:
+    plt.style.use("default")
+    plt.rcParams.update(
+        {
+            "figure.facecolor": "white",
+            "axes.facecolor": "white",
+            "savefig.facecolor": "white",
+            "font.family": "serif",
+            "font.serif": ["Times New Roman", "STIXGeneral", "DejaVu Serif"],
+            "mathtext.fontset": "stix",
+            "axes.labelsize": 12,
+            "axes.titlesize": 12,
+            "axes.titleweight": "semibold",
+            "axes.linewidth": 1.0,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.top": True,
+            "ytick.right": True,
+            "xtick.major.size": 5.0,
+            "xtick.minor.size": 2.8,
+            "ytick.major.size": 5.0,
+            "ytick.minor.size": 2.8,
+            "legend.frameon": True,
+            "legend.framealpha": 0.93,
+            "legend.fancybox": False,
+            "legend.edgecolor": "0.25",
+            "grid.alpha": 0.22,
+            "grid.linestyle": "--",
+            "lines.linewidth": 1.7,
+            "savefig.dpi": SAVE_DPI,
+        }
+    )
+
+
+def style_axes(ax: plt.Axes, logx: bool = False, logy: bool = False) -> None:
+    if logx:
+        ax.set_xscale("log")
+    if logy:
+        ax.set_yscale("log")
+    ax.tick_params(which="both", direction="in", top=True, right=True)
+    if not logx:
+        ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+    if not logy:
+        ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+    if logy:
+        ax.yaxis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+    ax.grid(True, which="major", linewidth=0.7)
+    ax.grid(True, which="minor", linewidth=0.35, alpha=0.12)
+
+
+def save_figure(fig: plt.Figure, outpath: Path) -> None:
+    fig.savefig(outpath, dpi=SAVE_DPI, bbox_inches="tight")
+    if EXPORT_PDF:
+        fig.savefig(outpath.with_suffix(".pdf"), bbox_inches="tight")
 
 
 def load_spectra(data_dir: Path, filename: str) -> pd.DataFrame:
@@ -292,24 +356,25 @@ def plot_raw_spectra(
     intensities_w_cm2: np.ndarray,
     outpath: Path,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(8.5, 5.5))
+    fig, ax = plt.subplots(figsize=(8.2, 5.4))
     norm = LogNorm(vmin=np.min(intensities_w_cm2), vmax=np.max(intensities_w_cm2))
-    cmap = cm.viridis
+    cmap = cm.cividis
 
     for i in range(spectra.shape[1]):
-        ax.plot(energy_ev, spectra[:, i], color=cmap(norm(intensities_w_cm2[i])), lw=1.0)
+        ax.plot(energy_ev, spectra[:, i], color=cmap(norm(intensities_w_cm2[i])), lw=1.15, alpha=0.96)
 
-    ax.set_yscale("log")
-    ax.set_xlabel("Photon energy (eV)")
-    ax.set_ylabel("PL intensity (a.u.)")
-    ax.set_title("All PL spectra (log scale)")
-    ax.grid(alpha=0.25, which="both")
+    style_axes(ax, logy=True)
+    ax.set_xlabel(r"Photon energy, $E$ (eV)")
+    ax.set_ylabel(r"PL intensity, $I_{\mathrm{PL}}$ (a.u.)")
+    ax.set_title("GaAs photoluminescence spectra")
+    ax.set_xlim(float(np.min(energy_ev)), float(np.max(energy_ev)))
 
     sm = cm.ScalarMappable(norm=norm, cmap=cmap)
-    cbar = fig.colorbar(sm, ax=ax, pad=0.02)
-    cbar.set_label("Excitation intensity (W/cm^2)")
-    fig.tight_layout()
-    fig.savefig(outpath, dpi=180)
+    cbar = fig.colorbar(sm, ax=ax, pad=0.018, fraction=0.045)
+    cbar.set_label(r"Excitation intensity (W cm$^{-2}$)")
+    cbar.ax.tick_params(direction="in")
+    fig.subplots_adjust(left=0.11, right=0.97, bottom=0.08, top=0.95, hspace=0.2)
+    save_figure(fig, outpath)
     plt.close(fig)
 
 
@@ -324,83 +389,112 @@ def plot_single_fit(
     fit_max_ev = result.fit_max_ev
     fit_mask = (energy_ev >= fit_min_ev) & (energy_ev <= fit_max_ev) & (intensity > 0)
 
-    fig, axes = plt.subplots(2, 1, figsize=(8.5, 8.0), sharex=False)
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(8.2, 7.3),
+        sharex=False,
+        gridspec_kw={"height_ratios": [1.25, 1.0], "hspace": 0.16},
+    )
     ax0, ax1 = axes
 
-    ax0.plot(energy_ev, intensity, lw=1.4, label="Experiment")
-    ax0.plot(energy_ev, intensity_model, lw=1.2, ls="--", label="High-energy linear fit")
-    ax0.axvspan(fit_min_ev, fit_max_ev, color="gray", alpha=0.15, label="Fit window")
-    ax0.set_yscale("log")
-    ax0.set_xlabel("Photon energy (eV)")
-    ax0.set_ylabel("PL intensity (a.u.)")
-    ax0.grid(alpha=0.25, which="both")
-    ax0.legend(loc="best")
+    ax0.plot(energy_ev, intensity, color="#1f4e79", lw=1.8, label="Experiment")
+    ax0.plot(energy_ev, intensity_model, color="#d32f2f", lw=1.45, ls="--", label="High-energy GPL fit")
+    ax0.axvspan(fit_min_ev, fit_max_ev, color="0.65", alpha=0.18, label="Selected fit window")
+    style_axes(ax0, logy=True)
+    ax0.set_xlabel(r"Photon energy, $E$ (eV)")
+    ax0.set_ylabel(r"PL intensity, $I_{\mathrm{PL}}$ (a.u.)")
+    ax0.legend(loc="lower left", fontsize=9)
     ax0.set_title(
-        f"Spectrum {result.spectrum_id} | Iexc={result.intensity_w_cm2:.3g} W/cm^2\n"
-        f"T={result.temperature_k:.1f} K, QFLS={result.qfls_ev:.3f} eV, R^2={result.r2:.5f}, "
-        f"window=[{fit_min_ev:.3f}, {fit_max_ev:.3f}] eV"
+        f"Spectrum {result.spectrum_id}  |  "
+        f"$I_{{exc}}$={result.intensity_w_cm2:.3g} W cm$^{{-2}}$"
+    )
+    info_text = (
+        r"$T$=" + f"{result.temperature_k:.1f} K, "
+        + r"$\Delta\mu$=" + f"{result.qfls_ev:.3f} eV, "
+        + r"$R^2$=" + f"{result.r2:.5f}\n"
+        + f"window=[{fit_min_ev:.3f}, {fit_max_ev:.3f}] eV"
+    )
+    ax0.text(
+        0.985,
+        0.97,
+        info_text,
+        transform=ax0.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+        bbox={"facecolor": "white", "edgecolor": "0.3", "boxstyle": "square,pad=0.25", "alpha": 0.95},
     )
 
     y_all = linearized_signal(energy_ev[intensity > 0], intensity[intensity > 0])
-    ax1.plot(energy_ev[intensity > 0], y_all, lw=1.1, label="Linearized data")
+    ax1.plot(energy_ev[intensity > 0], y_all, color="0.35", lw=1.05, label="Linearized data")
 
     x_fit_ev = energy_ev[fit_mask]
     x_fit_j = x_fit_ev * E_CHARGE
     y_line = result.slope * x_fit_j + result.intercept
-    ax1.plot(x_fit_ev, y_line, lw=1.6, ls="--", label="Linear regression")
-    ax1.axvspan(fit_min_ev, fit_max_ev, color="gray", alpha=0.15)
-    ax1.set_xlabel("Photon energy (eV)")
-    ax1.set_ylabel("log((h^3 c^2 / 2E^2) I)")
-    ax1.grid(alpha=0.25)
-    ax1.legend(loc="best")
+    y_fit_data = linearized_signal(x_fit_ev, intensity[fit_mask])
+    ax1.scatter(x_fit_ev, y_fit_data, s=13, color="#2e7d32", alpha=0.8, zorder=3, label="Points used for fit")
+    ax1.plot(x_fit_ev, y_line, color="#d32f2f", lw=1.5, ls="-", label="Linear regression")
+    ax1.axvspan(fit_min_ev, fit_max_ev, color="0.65", alpha=0.18)
+    style_axes(ax1)
+    ax1.set_xlabel(r"Photon energy, $E$ (eV)")
+    ax1.set_ylabel(r"$\ln\!\left(\frac{h^3 c^2}{2E^2}I_{\mathrm{PL}}\right)$")
+    ax1.legend(loc="best", fontsize=9)
 
-    fig.tight_layout()
-    fig.savefig(outpath, dpi=180)
+    fig.subplots_adjust(left=0.11, right=0.97, bottom=0.08, top=0.95, hspace=0.2)
+    save_figure(fig, outpath)
     plt.close(fig)
 
 
 def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     x = results_df["intensity_w_cm2"].to_numpy()
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8.0))
+    fig, axes = plt.subplots(2, 2, figsize=(10.2, 7.8), sharex=True)
     ax00, ax01, ax10, ax11 = axes.ravel()
 
-    ax00.plot(x, results_df["temperature_k"], "o-", lw=1.2, ms=4)
-    ax00.set_xscale("log")
-    ax00.set_xlabel("Excitation intensity (W/cm^2)")
-    ax00.set_ylabel("Temperature (K)")
-    ax00.grid(alpha=0.3, which="both")
+    ax00.plot(x, results_df["temperature_k"], "o-", lw=1.5, ms=4.5, color="#1565c0")
+    style_axes(ax00, logx=True)
+    ax00.set_ylabel(r"Temperature, $T$ (K)")
+    ax00.text(0.03, 0.93, "(a)", transform=ax00.transAxes, fontsize=11, fontweight="semibold")
 
-    ax01.plot(x, results_df["qfls_ev"], "o-", lw=1.2, ms=4, label="QFLS")
-    ax01.plot(x, results_df["qfls_effective_ev"], "s--", lw=1.0, ms=3, label="QFLS effective")
-    ax01.set_xscale("log")
-    ax01.set_xlabel("Excitation intensity (W/cm^2)")
-    ax01.set_ylabel("QFLS (eV)")
-    ax01.grid(alpha=0.3, which="both")
-    ax01.legend(loc="best")
+    ax01.plot(x, results_df["qfls_ev"], "o-", lw=1.5, ms=4.5, color="#6a1b9a", label=r"$\Delta\mu$")
+    ax01.plot(
+        x,
+        results_df["qfls_effective_ev"],
+        "s--",
+        lw=1.1,
+        ms=3.5,
+        color="#9c27b0",
+        alpha=0.82,
+        label=r"$\Delta\mu_{\mathrm{eff}}$",
+    )
+    style_axes(ax01, logx=True)
+    ax01.set_ylabel(r"QFLS (eV)")
+    ax01.legend(loc="best", fontsize=9)
+    ax01.text(0.03, 0.93, "(b)", transform=ax01.transAxes, fontsize=11, fontweight="semibold")
 
-    ax10.plot(x, results_df["mu_e_ev"], "o-", lw=1.2, ms=4, label="mu_e")
-    ax10.plot(x, results_df["mu_h_ev"], "o-", lw=1.2, ms=4, label="mu_h")
-    ax10.set_xscale("log")
-    ax10.set_xlabel("Excitation intensity (W/cm^2)")
-    ax10.set_ylabel("Chemical potentials (eV)")
-    ax10.grid(alpha=0.3, which="both")
-    ax10.legend(loc="best")
+    ax10.plot(x, results_df["mu_e_ev"], "o-", lw=1.5, ms=4.3, color="#ef6c00", label=r"$\mu_e$")
+    ax10.plot(x, results_df["mu_h_ev"], "o-", lw=1.5, ms=4.3, color="#2e7d32", label=r"$\mu_h$")
+    style_axes(ax10, logx=True)
+    ax10.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
+    ax10.set_ylabel(r"Chemical potential (eV)")
+    ax10.legend(loc="best", fontsize=9)
+    ax10.text(0.03, 0.93, "(c)", transform=ax10.transAxes, fontsize=11, fontweight="semibold")
 
-    ax11.plot(x, results_df["carrier_density_cm3"], "o-", lw=1.2, ms=4)
-    ax11.set_xscale("log")
-    ax11.set_yscale("log")
-    ax11.set_xlabel("Excitation intensity (W/cm^2)")
-    ax11.set_ylabel("Carrier density n (cm^-3)")
-    ax11.grid(alpha=0.3, which="both")
+    ax11.plot(x, results_df["carrier_density_cm3"], "o-", lw=1.5, ms=4.5, color="#00838f")
+    style_axes(ax11, logx=True, logy=True)
+    ax11.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
+    ax11.set_ylabel(r"Carrier density, $n$ (cm$^{-3}$)")
+    ax11.text(0.03, 0.93, "(d)", transform=ax11.transAxes, fontsize=11, fontweight="semibold")
 
-    fig.suptitle("Extracted hot-carrier parameters vs excitation intensity", y=0.98)
-    fig.tight_layout()
-    fig.savefig(outpath, dpi=180)
+    fig.suptitle("Extracted hot-carrier parameters versus excitation intensity", y=1.01, fontsize=13)
+    fig.tight_layout(pad=0.7)
+    save_figure(fig, outpath)
     plt.close(fig)
 
 
 def main() -> None:
+    setup_plot_style()
     root = Path(__file__).resolve().parent
     out_dir = root / "outputs"
     fit_dir = out_dir / "fits"
