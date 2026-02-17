@@ -52,7 +52,7 @@ Important consequence:
 
 After extracting `T` and `Delta mu` from the PL fit, the code computes carrier statistics using:
 
-- the convention from your notes: `Delta mu = mu_e + mu_h`
+- the convention `Delta mu = mu_e + mu_h`
 - electroneutrality: `n_e = n_h`
 - parabolic-band, Maxwell-Boltzmann (MB) expressions
 
