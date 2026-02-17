@@ -12,8 +12,22 @@ from matplotlib.colors import LogNorm
 
 # ----------------------------- User-tunable settings -----------------------------
 FILENAME = "GaAs bulk_PL_avg_circle_4pixs.txt"
+
+# If False, fixed fit window below is used for all spectra.
+AUTO_SELECT_FIT_WINDOW = True
 FIT_ENERGY_MIN_EV = 1.50
 FIT_ENERGY_MAX_EV = 1.72
+
+# Auto-window selection parameters
+WINDOW_SEARCH_MIN_EV = 1.45
+WINDOW_SEARCH_MAX_EV = 1.77
+WINDOW_PEAK_OFFSET_EV = 0.045
+WINDOW_MIN_POINTS = 18
+WINDOW_MIN_R2 = 0.995
+WINDOW_T_MIN_K = 150.0
+WINDOW_T_MAX_K = 1200.0
+WINDOW_LENGTH_WEIGHT = 2.0e-4
+WINDOW_HIGH_ENERGY_WEIGHT = 2.0e-4
 
 # A0 is usually unknown in the simplified linear fit.
 # If left at 1.0, reported QFLS is an effective value (offset absorbed in A0).
@@ -67,6 +81,9 @@ M0 = 9.1093837015e-31  # kg
 class FitResult:
     spectrum_id: str
     intensity_w_cm2: float
+    fit_min_ev: float
+    fit_max_ev: float
+    window_mode: str
     n_points_fit: int
     slope: float
     intercept: float
@@ -109,23 +126,112 @@ def compute_mu_and_density_mb(
     return mu_e_ev, mu_h_ev, n_cm3
 
 
+def auto_select_fit_window(
+    energy_ev: np.ndarray,
+    intensity: np.ndarray,
+) -> tuple[np.ndarray, float, float, str]:
+    valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
+    if np.count_nonzero(valid) < WINDOW_MIN_POINTS:
+        return valid, np.nan, np.nan, "fallback_insufficient_points"
+
+    peak_idx = np.argmax(np.where(valid, intensity, -np.inf))
+    peak_ev = float(energy_ev[peak_idx])
+    search_min = max(WINDOW_SEARCH_MIN_EV, peak_ev + WINDOW_PEAK_OFFSET_EV)
+    search_max = WINDOW_SEARCH_MAX_EV
+
+    candidate = valid & (energy_ev >= search_min) & (energy_ev <= search_max)
+    window_mode = "auto_peak_offset"
+
+    if np.count_nonzero(candidate) < WINDOW_MIN_POINTS:
+        candidate = valid & (energy_ev >= WINDOW_SEARCH_MIN_EV) & (energy_ev <= WINDOW_SEARCH_MAX_EV)
+        window_mode = "fallback_search_range_only"
+
+    if np.count_nonzero(candidate) < WINDOW_MIN_POINTS:
+        candidate = valid
+        window_mode = "fallback_all_valid"
+
+    idx = np.flatnonzero(candidate)
+    x_j = energy_ev[idx] * E_CHARGE
+    y = linearized_signal(energy_ev[idx], intensity[idx])
+
+    best: dict[str, float | int] | None = None
+    n = idx.size
+
+    for i in range(0, n - WINDOW_MIN_POINTS + 1):
+        for j in range(i + WINDOW_MIN_POINTS - 1, n):
+            xx = x_j[i : j + 1]
+            yy = y[i : j + 1]
+            slope, intercept = np.polyfit(xx, yy, deg=1)
+            if not np.isfinite(slope) or slope >= 0:
+                continue
+
+            yy_fit = slope * xx + intercept
+            ss_res = np.sum((yy - yy_fit) ** 2)
+            ss_tot = np.sum((yy - np.mean(yy)) ** 2)
+            if ss_tot <= 0:
+                continue
+            r2 = 1.0 - ss_res / ss_tot
+            if (not np.isfinite(r2)) or (r2 < WINDOW_MIN_R2):
+                continue
+
+            temperature_k = -1.0 / (K_B * slope)
+            if (not np.isfinite(temperature_k)) or (temperature_k < WINDOW_T_MIN_K) or (temperature_k > WINDOW_T_MAX_K):
+                continue
+
+            length = j - i + 1
+            window_start_ev = float(energy_ev[idx[i]])
+            score = (
+                r2
+                + WINDOW_LENGTH_WEIGHT * length
+                + WINDOW_HIGH_ENERGY_WEIGHT * (window_start_ev - float(np.nanmin(energy_ev)))
+            )
+
+            if (best is None) or (score > float(best["score"])):
+                best = {"score": score, "i": i, "j": j}
+
+    if best is None:
+        i = 0
+        j = n - 1
+        window_mode += "|fallback_full_candidate"
+    else:
+        i = int(best["i"])
+        j = int(best["j"])
+
+    selected_idx = idx[i : j + 1]
+    fit_mask = np.zeros_like(valid, dtype=bool)
+    fit_mask[selected_idx] = True
+    fit_min_ev = float(energy_ev[selected_idx[0]])
+    fit_max_ev = float(energy_ev[selected_idx[-1]])
+    return fit_mask, fit_min_ev, fit_max_ev, window_mode
+
+
 def fit_single_spectrum(
     energy_ev: np.ndarray,
     intensity: np.ndarray,
     spectrum_id: str,
     intensity_w_cm2: float,
-    fit_min_ev: float,
-    fit_max_ev: float,
+    auto_select_fit_window_enabled: bool,
+    fit_min_ev_fixed: float,
+    fit_max_ev_fixed: float,
     assumed_a0: float,
 ) -> tuple[FitResult, np.ndarray]:
-    valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
-    in_window = (energy_ev >= fit_min_ev) & (energy_ev <= fit_max_ev)
-    fit_mask = valid & in_window
+    if auto_select_fit_window_enabled:
+        fit_mask, fit_min_ev, fit_max_ev, window_mode = auto_select_fit_window(energy_ev=energy_ev, intensity=intensity)
+    else:
+        valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
+        in_window = (energy_ev >= fit_min_ev_fixed) & (energy_ev <= fit_max_ev_fixed)
+        fit_mask = valid & in_window
+        fit_min_ev = fit_min_ev_fixed
+        fit_max_ev = fit_max_ev_fixed
+        window_mode = "fixed"
 
     if np.count_nonzero(fit_mask) < 3:
         result = FitResult(
             spectrum_id=spectrum_id,
             intensity_w_cm2=float(intensity_w_cm2),
+            fit_min_ev=float(fit_min_ev),
+            fit_max_ev=float(fit_max_ev),
+            window_mode=window_mode,
             n_points_fit=int(np.count_nonzero(fit_mask)),
             slope=np.nan,
             intercept=np.nan,
@@ -163,6 +269,9 @@ def fit_single_spectrum(
     result = FitResult(
         spectrum_id=spectrum_id,
         intensity_w_cm2=float(intensity_w_cm2),
+        fit_min_ev=float(fit_min_ev),
+        fit_max_ev=float(fit_max_ev),
+        window_mode=window_mode,
         n_points_fit=int(np.count_nonzero(fit_mask)),
         slope=float(slope),
         intercept=float(intercept),
@@ -209,10 +318,10 @@ def plot_single_fit(
     intensity: np.ndarray,
     intensity_model: np.ndarray,
     result: FitResult,
-    fit_min_ev: float,
-    fit_max_ev: float,
     outpath: Path,
 ) -> None:
+    fit_min_ev = result.fit_min_ev
+    fit_max_ev = result.fit_max_ev
     fit_mask = (energy_ev >= fit_min_ev) & (energy_ev <= fit_max_ev) & (intensity > 0)
 
     fig, axes = plt.subplots(2, 1, figsize=(8.5, 8.0), sharex=False)
@@ -228,7 +337,8 @@ def plot_single_fit(
     ax0.legend(loc="best")
     ax0.set_title(
         f"Spectrum {result.spectrum_id} | Iexc={result.intensity_w_cm2:.3g} W/cm^2\n"
-        f"T={result.temperature_k:.1f} K, QFLS={result.qfls_ev:.3f} eV, R^2={result.r2:.5f}"
+        f"T={result.temperature_k:.1f} K, QFLS={result.qfls_ev:.3f} eV, R^2={result.r2:.5f}, "
+        f"window=[{fit_min_ev:.3f}, {fit_max_ev:.3f}] eV"
     )
 
     y_all = linearized_signal(energy_ev[intensity > 0], intensity[intensity > 0])
@@ -325,8 +435,9 @@ def main() -> None:
         intensity=spectra[:, 0],
         spectrum_id=spectrum_ids[0],
         intensity_w_cm2=float(EXCITATION_INTENSITY_W_CM2[0]),
-        fit_min_ev=FIT_ENERGY_MIN_EV,
-        fit_max_ev=FIT_ENERGY_MAX_EV,
+        auto_select_fit_window_enabled=AUTO_SELECT_FIT_WINDOW,
+        fit_min_ev_fixed=FIT_ENERGY_MIN_EV,
+        fit_max_ev_fixed=FIT_ENERGY_MAX_EV,
         assumed_a0=ASSUMED_A0,
     )
     plot_single_fit(
@@ -334,8 +445,6 @@ def main() -> None:
         intensity=spectra[:, 0],
         intensity_model=first_model,
         result=first_result,
-        fit_min_ev=FIT_ENERGY_MIN_EV,
-        fit_max_ev=FIT_ENERGY_MAX_EV,
         outpath=fit_dir / "fit_spectrum_00.png",
     )
 
@@ -348,8 +457,9 @@ def main() -> None:
             intensity=spectra[:, i],
             spectrum_id=spectrum_ids[i],
             intensity_w_cm2=float(EXCITATION_INTENSITY_W_CM2[i]),
-            fit_min_ev=FIT_ENERGY_MIN_EV,
-            fit_max_ev=FIT_ENERGY_MAX_EV,
+            auto_select_fit_window_enabled=AUTO_SELECT_FIT_WINDOW,
+            fit_min_ev_fixed=FIT_ENERGY_MIN_EV,
+            fit_max_ev_fixed=FIT_ENERGY_MAX_EV,
             assumed_a0=ASSUMED_A0,
         )
         all_results.append(result)
@@ -358,8 +468,6 @@ def main() -> None:
             intensity=spectra[:, i],
             intensity_model=intensity_model,
             result=result,
-            fit_min_ev=FIT_ENERGY_MIN_EV,
-            fit_max_ev=FIT_ENERGY_MAX_EV,
             outpath=fit_dir / f"fit_spectrum_{i:02d}.png",
         )
 
@@ -372,10 +480,17 @@ def main() -> None:
     print(f"Spectrum fits:    {fit_dir}")
     print(f"Results table:    {out_dir / 'fit_results.csv'}")
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
-    print(
-        f"Fit window used:  [{FIT_ENERGY_MIN_EV:.3f}, {FIT_ENERGY_MAX_EV:.3f}] eV | "
-        f"ASSUMED_A0={ASSUMED_A0:g}"
-    )
+    if AUTO_SELECT_FIT_WINDOW:
+        print(
+            "Fit window mode:  AUTO per spectrum | "
+            f"search=[{WINDOW_SEARCH_MIN_EV:.3f}, {WINDOW_SEARCH_MAX_EV:.3f}] eV, "
+            f"peak_offset={WINDOW_PEAK_OFFSET_EV:.3f} eV"
+        )
+    else:
+        print(
+            f"Fit window used:  [{FIT_ENERGY_MIN_EV:.3f}, {FIT_ENERGY_MAX_EV:.3f}] eV | "
+            f"ASSUMED_A0={ASSUMED_A0:g}"
+        )
 
 
 if __name__ == "__main__":
