@@ -20,7 +20,7 @@ FIT_ENERGY_MIN_EV = 1.55
 FIT_ENERGY_MAX_EV = 1.70
 
 # Auto-window selection parameters
-WINDOW_SEARCH_MIN_EV = 1.55
+WINDOW_SEARCH_MIN_EV = 1.50
 WINDOW_SEARCH_MAX_EV = 1.70
 WINDOW_PEAK_OFFSET_EV = 0.045
 WINDOW_MIN_POINTS = 18
@@ -361,14 +361,14 @@ def _fit_range_rms_uncertainty(
     base_fit_mask: np.ndarray,
     base_parameters: dict[str, float],
     assumed_a0: float,
-) -> tuple[dict[str, float], int]:
+) -> tuple[dict[str, float], int, list[tuple[float, float]]]:
     out = {key: np.nan for key in base_parameters}
     if (not ESTIMATE_FIT_RANGE_UNCERTAINTY) or FIT_RANGE_SCAN_SHIFT_POINTS < 1:
-        return out, 0
+        return out, 0, []
 
     idx_base = np.flatnonzero(base_fit_mask)
     if idx_base.size < 3:
-        return out, 0
+        return out, 0, []
 
     valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
     lo0 = int(idx_base[0])
@@ -379,6 +379,7 @@ def _fit_range_rms_uncertainty(
 
     samples = {key: [] for key in base_parameters}
     n_windows = 0
+    accepted_windows_ev: list[tuple[float, float]] = []
 
     for dlo in range(-FIT_RANGE_SCAN_SHIFT_POINTS, FIT_RANGE_SCAN_SHIFT_POINTS + 1):
         for dhi in range(-FIT_RANGE_SCAN_SHIFT_POINTS, FIT_RANGE_SCAN_SHIFT_POINTS + 1):
@@ -426,10 +427,11 @@ def _fit_range_rms_uncertainty(
             for key, value in values.items():
                 if np.isfinite(value):
                     samples[key].append(float(value))
+            accepted_windows_ev.append((float(energy_ev[lo]), float(energy_ev[hi])))
             n_windows += 1
 
     if n_windows == 0:
-        return out, 0
+        return out, 0, []
 
     for key, base_value in base_parameters.items():
         sample_arr = np.array(samples[key], dtype=float)
@@ -437,7 +439,7 @@ def _fit_range_rms_uncertainty(
             out[key] = np.nan
         else:
             out[key] = float(np.sqrt(np.mean((sample_arr - base_value) ** 2)))
-    return out, n_windows
+    return out, n_windows, accepted_windows_ev
 
 
 def _combine_uncertainties(err_a: float, err_b: float) -> float:
@@ -548,7 +550,7 @@ def fit_single_spectrum(
     fit_min_ev_fixed: float,
     fit_max_ev_fixed: float,
     assumed_a0: float,
-) -> tuple[FitResult, np.ndarray]:
+) -> tuple[FitResult, np.ndarray, list[tuple[float, float]]]:
     if auto_select_fit_window_enabled:
         fit_mask, fit_min_ev, fit_max_ev, window_mode = auto_select_fit_window(energy_ev=energy_ev, intensity=intensity)
     else:
@@ -596,7 +598,7 @@ def fit_single_spectrum(
             carrier_density_err_total_cm3=np.nan,
             fit_range_samples=0,
         )
-        return result, np.full_like(intensity, np.nan, dtype=float)
+        return result, np.full_like(intensity, np.nan, dtype=float), []
 
     x_j = energy_ev[fit_mask] * E_CHARGE
     y = linearized_signal(energy_ev[fit_mask], intensity[fit_mask])
@@ -621,7 +623,7 @@ def fit_single_spectrum(
         qfls_ev=qfls_ev,
         assumed_a0=assumed_a0,
     )
-    range_err, n_windows_range = _fit_range_rms_uncertainty(
+    range_err, n_windows_range, range_windows_ev = _fit_range_rms_uncertainty(
         energy_ev=energy_ev,
         intensity=intensity,
         base_fit_mask=fit_mask,
@@ -685,7 +687,7 @@ def fit_single_spectrum(
         carrier_density_err_total_cm3=float(carrier_density_err_total_cm3),
         fit_range_samples=int(n_windows_range),
     )
-    return result, intensity_model
+    return result, intensity_model, range_windows_ev
 
 
 def plot_raw_spectra(
@@ -721,6 +723,7 @@ def plot_single_fit(
     intensity: np.ndarray,
     intensity_model: np.ndarray,
     result: FitResult,
+    fit_range_windows_ev: list[tuple[float, float]] | None,
     outpath: Path,
 ) -> None:
     fit_min_ev = result.fit_min_ev
@@ -739,6 +742,21 @@ def plot_single_fit(
     ax0.plot(energy_ev, intensity, color="#1f4e79", lw=1.8, label="Experiment")
     ax0.plot(energy_ev, intensity_model, color="#d32f2f", lw=1.45, ls="--", label="High-energy GPL fit")
     ax0.axvspan(fit_min_ev, fit_max_ev, color="0.65", alpha=0.18, label="Selected fit window")
+    if fit_range_windows_ev:
+        for lo_ev, hi_ev in fit_range_windows_ev:
+            ax0.hlines(
+                y=0.06,
+                xmin=lo_ev,
+                xmax=hi_ev,
+                transform=ax0.get_xaxis_transform(),
+                color="#64b5f6",
+                lw=1.0,
+                alpha=0.11,
+            )
+        lo_env = float(min(w[0] for w in fit_range_windows_ev))
+        hi_env = float(max(w[1] for w in fit_range_windows_ev))
+        ax0.axvspan(lo_env, hi_env, color="#64b5f6", alpha=0.07, label="Fit-range scan envelope")
+
     style_axes(ax0, logy=True)
     ax0.set_xlabel(r"Photon energy, $E$ (eV)")
     ax0.set_ylabel(r"PL intensity, $I_{\mathrm{PL}}$ (a.u.)")
@@ -758,6 +776,7 @@ def plot_single_fit(
         + r"$\Delta\mu$=" + f"{q_label} eV, "
         + r"$R^2$=" + f"{result.r2:.5f}\n"
         + f"window=[{fit_min_ev:.3f}, {fit_max_ev:.3f}] eV"
+        + f", scan={result.fit_range_samples:d}"
     )
     ax0.text(
         0.985,
@@ -939,7 +958,7 @@ def main() -> None:
     )
 
     # First spectrum fit (requested starting point)
-    first_result, first_model = fit_single_spectrum(
+    first_result, first_model, first_range_windows = fit_single_spectrum(
         energy_ev=energy_ev,
         intensity=spectra[:, 0],
         spectrum_id=spectrum_ids[0],
@@ -954,6 +973,7 @@ def main() -> None:
         intensity=spectra[:, 0],
         intensity_model=first_model,
         result=first_result,
+        fit_range_windows_ev=first_range_windows,
         outpath=fit_dir / "fit_spectrum_00.png",
     )
 
@@ -961,7 +981,7 @@ def main() -> None:
 
     # Then iterate over all remaining spectra
     for i in range(1, spectra.shape[1]):
-        result, intensity_model = fit_single_spectrum(
+        result, intensity_model, range_windows = fit_single_spectrum(
             energy_ev=energy_ev,
             intensity=spectra[:, i],
             spectrum_id=spectrum_ids[i],
@@ -977,6 +997,7 @@ def main() -> None:
             intensity=spectra[:, i],
             intensity_model=intensity_model,
             result=result,
+            fit_range_windows_ev=range_windows,
             outpath=fit_dir / f"fit_spectrum_{i:02d}.png",
         )
 
