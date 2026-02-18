@@ -30,6 +30,13 @@ WINDOW_T_MAX_K = 1200.0
 WINDOW_LENGTH_WEIGHT = 2.0e-4
 WINDOW_HIGH_ENERGY_WEIGHT = 2.0e-4
 
+# Fit-range uncertainty scan around selected fit bounds (in index points)
+ESTIMATE_FIT_RANGE_UNCERTAINTY = True
+FIT_RANGE_SCAN_SHIFT_POINTS = 4
+FIT_RANGE_SCAN_MIN_POINTS = 12
+FIT_RANGE_SCAN_MIN_R2 = 0.99
+FIT_RANGE_SCAN_REQUIRE_PHYSICAL_BOUNDS = True
+
 # Figure export/style
 SAVE_DPI = 450
 EXPORT_PDF = True
@@ -99,6 +106,25 @@ class FitResult:
     mu_e_ev: float
     mu_h_ev: float
     carrier_density_cm3: float
+    temperature_err_chi2_k: float
+    temperature_err_range_k: float
+    temperature_err_total_k: float
+    qfls_effective_err_chi2_ev: float
+    qfls_effective_err_range_ev: float
+    qfls_effective_err_total_ev: float
+    qfls_err_chi2_ev: float
+    qfls_err_range_ev: float
+    qfls_err_total_ev: float
+    mu_e_err_chi2_ev: float
+    mu_e_err_range_ev: float
+    mu_e_err_total_ev: float
+    mu_h_err_chi2_ev: float
+    mu_h_err_range_ev: float
+    mu_h_err_total_ev: float
+    carrier_density_err_chi2_cm3: float
+    carrier_density_err_range_cm3: float
+    carrier_density_err_total_cm3: float
+    fit_range_samples: int
 
 
 def setup_plot_style() -> None:
@@ -188,6 +214,250 @@ def compute_mu_and_density_mb(
     n_m3 = nc * np.exp(((mu_e_ev - eg_ev / 2.0) * E_CHARGE) / (K_B * temperature_k))
     n_cm3 = n_m3 / 1e6
     return mu_e_ev, mu_h_ev, n_cm3
+
+
+def _compute_linear_fit_and_covariance(
+    x_j: np.ndarray, y: np.ndarray
+) -> tuple[float, float, float, np.ndarray]:
+    slope, intercept = np.polyfit(x_j, y, deg=1)
+    y_fit = slope * x_j + intercept
+    ss_res = float(np.sum((y - y_fit) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+    covariance = np.full((2, 2), np.nan, dtype=float)
+    n_points = int(x_j.size)
+    if n_points > 2:
+        x_mean = float(np.mean(x_j))
+        sxx = float(np.sum((x_j - x_mean) ** 2))
+        if sxx > 0 and np.isfinite(ss_res):
+            sigma2 = ss_res / (n_points - 2)
+            covariance[0, 0] = sigma2 / sxx
+            covariance[1, 1] = sigma2 * (1.0 / n_points + x_mean**2 / sxx)
+            covariance[0, 1] = covariance[1, 0] = -x_mean * sigma2 / sxx
+
+    return float(slope), float(intercept), float(r2), covariance
+
+
+def _compute_parameters_from_line(
+    slope: float, intercept: float, assumed_a0: float
+) -> tuple[float, float, float, float, float, float]:
+    if (not np.isfinite(slope)) or slope == 0 or (not np.isfinite(intercept)):
+        return np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
+
+    temperature_k = -1.0 / (K_B * slope)
+    qfls_effective_j = intercept * K_B * temperature_k
+    qfls_effective_ev = qfls_effective_j / E_CHARGE
+    qfls_ev = qfls_effective_ev - (K_B * temperature_k / E_CHARGE) * np.log(assumed_a0)
+    mu_e_ev, mu_h_ev, n_cm3 = compute_mu_and_density_mb(temperature_k=temperature_k, qfls_ev=qfls_ev)
+    return (
+        float(temperature_k),
+        float(qfls_effective_ev),
+        float(qfls_ev),
+        float(mu_e_ev),
+        float(mu_h_ev),
+        float(n_cm3),
+    )
+
+
+def _jacobian_mu_density_wrt_t_q(temperature_k: float, qfls_ev: float) -> np.ndarray:
+    jac = np.full((3, 2), np.nan, dtype=float)
+    if (not np.isfinite(temperature_k)) or (not np.isfinite(qfls_ev)) or temperature_k <= 0:
+        return jac
+
+    dt = max(1e-3, 1e-4 * abs(temperature_k))
+    t_minus = max(1e-6, temperature_k - dt)
+    t_plus = temperature_k + dt
+    dt_eff = t_plus - t_minus
+
+    dq = max(1e-6, 1e-4 * abs(qfls_ev))
+    q_minus = qfls_ev - dq
+    q_plus = qfls_ev + dq
+    dq_eff = q_plus - q_minus
+
+    mu_e_tp, mu_h_tp, n_tp = compute_mu_and_density_mb(temperature_k=t_plus, qfls_ev=qfls_ev)
+    mu_e_tm, mu_h_tm, n_tm = compute_mu_and_density_mb(temperature_k=t_minus, qfls_ev=qfls_ev)
+    mu_e_qp, mu_h_qp, n_qp = compute_mu_and_density_mb(temperature_k=temperature_k, qfls_ev=q_plus)
+    mu_e_qm, mu_h_qm, n_qm = compute_mu_and_density_mb(temperature_k=temperature_k, qfls_ev=q_minus)
+
+    jac[:, 0] = np.array(
+        [
+            (mu_e_tp - mu_e_tm) / dt_eff,
+            (mu_h_tp - mu_h_tm) / dt_eff,
+            (n_tp - n_tm) / dt_eff,
+        ],
+        dtype=float,
+    )
+    jac[:, 1] = np.array(
+        [
+            (mu_e_qp - mu_e_qm) / dq_eff,
+            (mu_h_qp - mu_h_qm) / dq_eff,
+            (n_qp - n_qm) / dq_eff,
+        ],
+        dtype=float,
+    )
+    return jac
+
+
+def _chi2_parameter_uncertainties(
+    slope: float,
+    intercept: float,
+    covariance_line: np.ndarray,
+    temperature_k: float,
+    qfls_ev: float,
+    assumed_a0: float,
+) -> dict[str, float]:
+    out = {
+        "temperature_k": np.nan,
+        "qfls_effective_ev": np.nan,
+        "qfls_ev": np.nan,
+        "mu_e_ev": np.nan,
+        "mu_h_ev": np.nan,
+        "carrier_density_cm3": np.nan,
+    }
+    if (not np.isfinite(slope)) or slope == 0:
+        return out
+    if covariance_line.shape != (2, 2) or not np.all(np.isfinite(covariance_line)):
+        return out
+
+    d_t_dm = 1.0 / (K_B * slope**2)
+    d_qeff_dm = intercept / (slope**2 * E_CHARGE)
+    d_qeff_db = -1.0 / (slope * E_CHARGE)
+    alpha = (K_B / E_CHARGE) * np.log(assumed_a0)
+    d_q_dm = d_qeff_dm - alpha * d_t_dm
+    d_q_db = d_qeff_db
+
+    jac_primary = np.array(
+        [
+            [d_t_dm, 0.0],
+            [d_qeff_dm, d_qeff_db],
+            [d_q_dm, d_q_db],
+        ],
+        dtype=float,
+    )
+    cov_primary = jac_primary @ covariance_line @ jac_primary.T
+    var_t = cov_primary[0, 0]
+    var_qeff = cov_primary[1, 1]
+    var_q = cov_primary[2, 2]
+
+    out["temperature_k"] = float(np.sqrt(max(var_t, 0.0)))
+    out["qfls_effective_ev"] = float(np.sqrt(max(var_qeff, 0.0)))
+    out["qfls_ev"] = float(np.sqrt(max(var_q, 0.0)))
+
+    cov_tq = cov_primary[np.ix_([0, 2], [0, 2])]
+    jac_derived = _jacobian_mu_density_wrt_t_q(temperature_k=temperature_k, qfls_ev=qfls_ev)
+    if np.all(np.isfinite(jac_derived)) and np.all(np.isfinite(cov_tq)):
+        cov_derived = jac_derived @ cov_tq @ jac_derived.T
+        out["mu_e_ev"] = float(np.sqrt(max(cov_derived[0, 0], 0.0)))
+        out["mu_h_ev"] = float(np.sqrt(max(cov_derived[1, 1], 0.0)))
+        out["carrier_density_cm3"] = float(np.sqrt(max(cov_derived[2, 2], 0.0)))
+
+    return out
+
+
+def _fit_range_rms_uncertainty(
+    energy_ev: np.ndarray,
+    intensity: np.ndarray,
+    base_fit_mask: np.ndarray,
+    base_parameters: dict[str, float],
+    assumed_a0: float,
+) -> tuple[dict[str, float], int]:
+    out = {key: np.nan for key in base_parameters}
+    if (not ESTIMATE_FIT_RANGE_UNCERTAINTY) or FIT_RANGE_SCAN_SHIFT_POINTS < 1:
+        return out, 0
+
+    idx_base = np.flatnonzero(base_fit_mask)
+    if idx_base.size < 3:
+        return out, 0
+
+    valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
+    lo0 = int(idx_base[0])
+    hi0 = int(idx_base[-1])
+    n_total = int(energy_ev.size)
+    idx_grid = np.arange(n_total)
+    min_points = max(3, FIT_RANGE_SCAN_MIN_POINTS)
+
+    samples = {key: [] for key in base_parameters}
+    n_windows = 0
+
+    for dlo in range(-FIT_RANGE_SCAN_SHIFT_POINTS, FIT_RANGE_SCAN_SHIFT_POINTS + 1):
+        for dhi in range(-FIT_RANGE_SCAN_SHIFT_POINTS, FIT_RANGE_SCAN_SHIFT_POINTS + 1):
+            lo = lo0 + dlo
+            hi = hi0 + dhi
+            if lo < 0 or hi >= n_total or hi <= lo:
+                continue
+
+            mask_window = (idx_grid >= lo) & (idx_grid <= hi) & valid
+            if np.count_nonzero(mask_window) < min_points:
+                continue
+
+            x_j = energy_ev[mask_window] * E_CHARGE
+            y = linearized_signal(energy_ev[mask_window], intensity[mask_window])
+            slope, intercept, r2, _ = _compute_linear_fit_and_covariance(x_j, y)
+            (
+                temperature_k,
+                qfls_effective_ev,
+                qfls_ev,
+                mu_e_ev,
+                mu_h_ev,
+                n_cm3,
+            ) = _compute_parameters_from_line(slope=slope, intercept=intercept, assumed_a0=assumed_a0)
+
+            if FIT_RANGE_SCAN_REQUIRE_PHYSICAL_BOUNDS:
+                if (
+                    (not np.isfinite(temperature_k))
+                    or (temperature_k < WINDOW_T_MIN_K)
+                    or (temperature_k > WINDOW_T_MAX_K)
+                    or (not np.isfinite(r2))
+                    or (r2 < FIT_RANGE_SCAN_MIN_R2)
+                    or (not np.isfinite(slope))
+                    or (slope >= 0)
+                ):
+                    continue
+
+            values = {
+                "temperature_k": temperature_k,
+                "qfls_effective_ev": qfls_effective_ev,
+                "qfls_ev": qfls_ev,
+                "mu_e_ev": mu_e_ev,
+                "mu_h_ev": mu_h_ev,
+                "carrier_density_cm3": n_cm3,
+            }
+            for key, value in values.items():
+                if np.isfinite(value):
+                    samples[key].append(float(value))
+            n_windows += 1
+
+    if n_windows == 0:
+        return out, 0
+
+    for key, base_value in base_parameters.items():
+        sample_arr = np.array(samples[key], dtype=float)
+        if sample_arr.size == 0 or (not np.isfinite(base_value)):
+            out[key] = np.nan
+        else:
+            out[key] = float(np.sqrt(np.mean((sample_arr - base_value) ** 2)))
+    return out, n_windows
+
+
+def _combine_uncertainties(err_a: float, err_b: float) -> float:
+    a_ok = np.isfinite(err_a)
+    b_ok = np.isfinite(err_b)
+    if a_ok and b_ok:
+        return float(np.sqrt(err_a**2 + err_b**2))
+    if a_ok:
+        return float(abs(err_a))
+    if b_ok:
+        return float(abs(err_b))
+    return np.nan
+
+
+def _safe_log_yerr(y: np.ndarray, err: np.ndarray) -> np.ndarray:
+    y = np.asarray(y, dtype=float)
+    err = np.asarray(err, dtype=float)
+    lower = np.where(np.isfinite(y) & np.isfinite(err) & (y > 0), np.minimum(err, 0.95 * y), np.nan)
+    upper = np.where(np.isfinite(err), err, np.nan)
+    return np.vstack([lower, upper])
 
 
 def auto_select_fit_window(
@@ -306,29 +576,78 @@ def fit_single_spectrum(
             mu_e_ev=np.nan,
             mu_h_ev=np.nan,
             carrier_density_cm3=np.nan,
+            temperature_err_chi2_k=np.nan,
+            temperature_err_range_k=np.nan,
+            temperature_err_total_k=np.nan,
+            qfls_effective_err_chi2_ev=np.nan,
+            qfls_effective_err_range_ev=np.nan,
+            qfls_effective_err_total_ev=np.nan,
+            qfls_err_chi2_ev=np.nan,
+            qfls_err_range_ev=np.nan,
+            qfls_err_total_ev=np.nan,
+            mu_e_err_chi2_ev=np.nan,
+            mu_e_err_range_ev=np.nan,
+            mu_e_err_total_ev=np.nan,
+            mu_h_err_chi2_ev=np.nan,
+            mu_h_err_range_ev=np.nan,
+            mu_h_err_total_ev=np.nan,
+            carrier_density_err_chi2_cm3=np.nan,
+            carrier_density_err_range_cm3=np.nan,
+            carrier_density_err_total_cm3=np.nan,
+            fit_range_samples=0,
         )
         return result, np.full_like(intensity, np.nan, dtype=float)
 
     x_j = energy_ev[fit_mask] * E_CHARGE
     y = linearized_signal(energy_ev[fit_mask], intensity[fit_mask])
+    slope, intercept, r2, covariance_line = _compute_linear_fit_and_covariance(x_j, y)
+    temperature_k, qfls_effective_ev, qfls_ev, mu_e_ev, mu_h_ev, n_cm3 = _compute_parameters_from_line(
+        slope=slope, intercept=intercept, assumed_a0=assumed_a0
+    )
 
-    slope, intercept = np.polyfit(x_j, y, deg=1)
-    y_fit = slope * x_j + intercept
-    ss_res = np.sum((y - y_fit) ** 2)
-    ss_tot = np.sum((y - np.mean(y)) ** 2)
-    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+    base_parameters = {
+        "temperature_k": temperature_k,
+        "qfls_effective_ev": qfls_effective_ev,
+        "qfls_ev": qfls_ev,
+        "mu_e_ev": mu_e_ev,
+        "mu_h_ev": mu_h_ev,
+        "carrier_density_cm3": n_cm3,
+    }
+    chi2_err = _chi2_parameter_uncertainties(
+        slope=slope,
+        intercept=intercept,
+        covariance_line=covariance_line,
+        temperature_k=temperature_k,
+        qfls_ev=qfls_ev,
+        assumed_a0=assumed_a0,
+    )
+    range_err, n_windows_range = _fit_range_rms_uncertainty(
+        energy_ev=energy_ev,
+        intensity=intensity,
+        base_fit_mask=fit_mask,
+        base_parameters=base_parameters,
+        assumed_a0=assumed_a0,
+    )
 
-    temperature_k = -1.0 / (K_B * slope)
-    qfls_effective_j = intercept * K_B * temperature_k
-    qfls_effective_ev = qfls_effective_j / E_CHARGE
-    qfls_ev = qfls_effective_ev - (K_B * temperature_k / E_CHARGE) * np.log(assumed_a0)
+    temperature_err_total_k = _combine_uncertainties(chi2_err["temperature_k"], range_err["temperature_k"])
+    qfls_effective_err_total_ev = _combine_uncertainties(
+        chi2_err["qfls_effective_ev"], range_err["qfls_effective_ev"]
+    )
+    qfls_err_total_ev = _combine_uncertainties(chi2_err["qfls_ev"], range_err["qfls_ev"])
+    mu_e_err_total_ev = _combine_uncertainties(chi2_err["mu_e_ev"], range_err["mu_e_ev"])
+    mu_h_err_total_ev = _combine_uncertainties(chi2_err["mu_h_ev"], range_err["mu_h_ev"])
+    carrier_density_err_total_cm3 = _combine_uncertainties(
+        chi2_err["carrier_density_cm3"], range_err["carrier_density_cm3"]
+    )
 
-    mu_e_ev, mu_h_ev, n_cm3 = compute_mu_and_density_mb(temperature_k=temperature_k, qfls_ev=qfls_ev)
-
-    energy_j_all = energy_ev * E_CHARGE
-    ln_prefactor = np.log(2.0 * energy_j_all**2 / (H**3 * C**2))
-    ln_i_model = ln_prefactor - (energy_j_all - qfls_effective_j) / (K_B * temperature_k)
-    intensity_model = np.exp(ln_i_model)
+    if np.isfinite(temperature_k) and temperature_k > 0 and np.isfinite(qfls_effective_ev):
+        qfls_effective_j = qfls_effective_ev * E_CHARGE
+        energy_j_all = energy_ev * E_CHARGE
+        ln_prefactor = np.log(2.0 * energy_j_all**2 / (H**3 * C**2))
+        ln_i_model = ln_prefactor - (energy_j_all - qfls_effective_j) / (K_B * temperature_k)
+        intensity_model = np.exp(ln_i_model)
+    else:
+        intensity_model = np.full_like(intensity, np.nan, dtype=float)
 
     result = FitResult(
         spectrum_id=spectrum_id,
@@ -346,6 +665,25 @@ def fit_single_spectrum(
         mu_e_ev=float(mu_e_ev),
         mu_h_ev=float(mu_h_ev),
         carrier_density_cm3=float(n_cm3),
+        temperature_err_chi2_k=float(chi2_err["temperature_k"]),
+        temperature_err_range_k=float(range_err["temperature_k"]),
+        temperature_err_total_k=float(temperature_err_total_k),
+        qfls_effective_err_chi2_ev=float(chi2_err["qfls_effective_ev"]),
+        qfls_effective_err_range_ev=float(range_err["qfls_effective_ev"]),
+        qfls_effective_err_total_ev=float(qfls_effective_err_total_ev),
+        qfls_err_chi2_ev=float(chi2_err["qfls_ev"]),
+        qfls_err_range_ev=float(range_err["qfls_ev"]),
+        qfls_err_total_ev=float(qfls_err_total_ev),
+        mu_e_err_chi2_ev=float(chi2_err["mu_e_ev"]),
+        mu_e_err_range_ev=float(range_err["mu_e_ev"]),
+        mu_e_err_total_ev=float(mu_e_err_total_ev),
+        mu_h_err_chi2_ev=float(chi2_err["mu_h_ev"]),
+        mu_h_err_range_ev=float(range_err["mu_h_ev"]),
+        mu_h_err_total_ev=float(mu_h_err_total_ev),
+        carrier_density_err_chi2_cm3=float(chi2_err["carrier_density_cm3"]),
+        carrier_density_err_range_cm3=float(range_err["carrier_density_cm3"]),
+        carrier_density_err_total_cm3=float(carrier_density_err_total_cm3),
+        fit_range_samples=int(n_windows_range),
     )
     return result, intensity_model
 
@@ -409,9 +747,15 @@ def plot_single_fit(
         f"Spectrum {result.spectrum_id}  |  "
         f"$I_{{exc}}$={result.intensity_w_cm2:.3g} W cm$^{{-2}}$"
     )
+    t_label = f"{result.temperature_k:.1f}"
+    if np.isfinite(result.temperature_err_total_k):
+        t_label += rf"$\pm${result.temperature_err_total_k:.1f}"
+    q_label = f"{result.qfls_ev:.3f}"
+    if np.isfinite(result.qfls_err_total_ev):
+        q_label += rf"$\pm${result.qfls_err_total_ev:.3f}"
     info_text = (
-        r"$T$=" + f"{result.temperature_k:.1f} K, "
-        + r"$\Delta\mu$=" + f"{result.qfls_ev:.3f} eV, "
+        r"$T$=" + f"{t_label} K, "
+        + r"$\Delta\mu$=" + f"{q_label} eV, "
         + r"$R^2$=" + f"{result.r2:.5f}\n"
         + f"window=[{fit_min_ev:.3f}, {fit_max_ev:.3f}] eV"
     )
@@ -452,18 +796,42 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     fig, axes = plt.subplots(2, 2, figsize=(10.2, 7.8), sharex=True)
     ax00, ax01, ax10, ax11 = axes.ravel()
 
-    ax00.plot(x, results_df["temperature_k"], "o-", lw=1.5, ms=4.5, color="#1565c0")
+    ax00.errorbar(
+        x,
+        results_df["temperature_k"],
+        yerr=results_df["temperature_err_total_k"],
+        fmt="o-",
+        lw=1.5,
+        ms=4.5,
+        capsize=2.5,
+        elinewidth=1.0,
+        color="#1565c0",
+    )
     style_axes(ax00, logx=True)
     ax00.set_ylabel(r"Temperature, $T$ (K)")
     ax00.text(0.03, 0.93, "(a)", transform=ax00.transAxes, fontsize=11, fontweight="semibold")
 
-    ax01.plot(x, results_df["qfls_ev"], "o-", lw=1.5, ms=4.5, color="#6a1b9a", label=r"$\Delta\mu$")
-    ax01.plot(
+    ax01.errorbar(
+        x,
+        results_df["qfls_ev"],
+        yerr=results_df["qfls_err_total_ev"],
+        fmt="o-",
+        lw=1.5,
+        ms=4.5,
+        capsize=2.5,
+        elinewidth=1.0,
+        color="#6a1b9a",
+        label=r"$\Delta\mu$",
+    )
+    ax01.errorbar(
         x,
         results_df["qfls_effective_ev"],
-        "s--",
+        yerr=results_df["qfls_effective_err_total_ev"],
+        fmt="s--",
         lw=1.1,
         ms=3.5,
+        capsize=2.0,
+        elinewidth=0.9,
         color="#9c27b0",
         alpha=0.82,
         label=r"$\Delta\mu_{\mathrm{eff}}$",
@@ -473,15 +841,49 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     ax01.legend(loc="best", fontsize=9)
     ax01.text(0.03, 0.93, "(b)", transform=ax01.transAxes, fontsize=11, fontweight="semibold")
 
-    ax10.plot(x, results_df["mu_e_ev"], "o-", lw=1.5, ms=4.3, color="#ef6c00", label=r"$\mu_e$")
-    ax10.plot(x, results_df["mu_h_ev"], "o-", lw=1.5, ms=4.3, color="#2e7d32", label=r"$\mu_h$")
+    ax10.errorbar(
+        x,
+        results_df["mu_e_ev"],
+        yerr=results_df["mu_e_err_total_ev"],
+        fmt="o-",
+        lw=1.5,
+        ms=4.3,
+        capsize=2.5,
+        elinewidth=1.0,
+        color="#ef6c00",
+        label=r"$\mu_e$",
+    )
+    ax10.errorbar(
+        x,
+        results_df["mu_h_ev"],
+        yerr=results_df["mu_h_err_total_ev"],
+        fmt="o-",
+        lw=1.5,
+        ms=4.3,
+        capsize=2.5,
+        elinewidth=1.0,
+        color="#2e7d32",
+        label=r"$\mu_h$",
+    )
     style_axes(ax10, logx=True)
     ax10.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
     ax10.set_ylabel(r"Chemical potential (eV)")
     ax10.legend(loc="best", fontsize=9)
     ax10.text(0.03, 0.93, "(c)", transform=ax10.transAxes, fontsize=11, fontweight="semibold")
 
-    ax11.plot(x, results_df["carrier_density_cm3"], "o-", lw=1.5, ms=4.5, color="#00838f")
+    n_vals = results_df["carrier_density_cm3"].to_numpy(dtype=float)
+    n_err = results_df["carrier_density_err_total_cm3"].to_numpy(dtype=float)
+    ax11.errorbar(
+        x,
+        n_vals,
+        yerr=_safe_log_yerr(y=n_vals, err=n_err),
+        fmt="o-",
+        lw=1.5,
+        ms=4.5,
+        capsize=2.5,
+        elinewidth=1.0,
+        color="#00838f",
+    )
     style_axes(ax11, logx=True, logy=True)
     ax11.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
     ax11.set_ylabel(r"Carrier density, $n$ (cm$^{-3}$)")
@@ -585,6 +987,15 @@ def main() -> None:
             f"Fit window used:  [{FIT_ENERGY_MIN_EV:.3f}, {FIT_ENERGY_MAX_EV:.3f}] eV | "
             f"ASSUMED_A0={ASSUMED_A0:g}"
         )
+    if ESTIMATE_FIT_RANGE_UNCERTAINTY:
+        print(
+            "Uncertainty mode: chi^2 + fit-range RMS | "
+            f"shift_points={FIT_RANGE_SCAN_SHIFT_POINTS}, "
+            f"min_points={FIT_RANGE_SCAN_MIN_POINTS}, "
+            f"min_r2={FIT_RANGE_SCAN_MIN_R2:.3f}"
+        )
+    else:
+        print("Uncertainty mode: chi^2 only")
 
 
 if __name__ == "__main__":
