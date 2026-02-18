@@ -792,6 +792,15 @@ def plot_single_fit(
 
 def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     x = results_df["intensity_w_cm2"].to_numpy()
+    x_valid = x[np.isfinite(x) & (x > 0)]
+    if x_valid.size > 0:
+        # Keep a small visual padding while using the full log-x width of the data range.
+        x_pad_factor = 10 ** 0.02
+        x_min_plot = float(np.min(x_valid) / x_pad_factor)
+        x_max_plot = float(np.max(x_valid) * x_pad_factor)
+    else:
+        x_min_plot = np.nan
+        x_max_plot = np.nan
 
     fig, axes = plt.subplots(2, 2, figsize=(10.2, 7.8), sharex=True)
     ax00, ax01, ax10, ax11 = axes.ravel()
@@ -888,6 +897,10 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     ax11.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
     ax11.set_ylabel(r"Carrier density, $n$ (cm$^{-3}$)")
     ax11.text(0.03, 0.93, "(d)", transform=ax11.transAxes, fontsize=11, fontweight="semibold")
+
+    if np.isfinite(x_min_plot) and np.isfinite(x_max_plot) and (x_max_plot > x_min_plot):
+        for ax in (ax00, ax01, ax10, ax11):
+            ax.set_xlim(x_min_plot, x_max_plot)
 
     fig.suptitle("Extracted hot-carrier parameters versus excitation intensity", y=1.01, fontsize=13)
     fig.tight_layout(pad=0.7)
