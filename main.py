@@ -16,12 +16,12 @@ FILENAME = "GaAs bulk_PL_avg_circle_4pixs.txt"
 
 # If False, fixed fit window below is used for all spectra.
 AUTO_SELECT_FIT_WINDOW = True
-FIT_ENERGY_MIN_EV = 1.50
-FIT_ENERGY_MAX_EV = 1.72
+FIT_ENERGY_MIN_EV = 1.55
+FIT_ENERGY_MAX_EV = 1.70
 
 # Auto-window selection parameters
-WINDOW_SEARCH_MIN_EV = 1.45
-WINDOW_SEARCH_MAX_EV = 1.77
+WINDOW_SEARCH_MIN_EV = 1.55
+WINDOW_SEARCH_MAX_EV = 1.70
 WINDOW_PEAK_OFFSET_EV = 0.045
 WINDOW_MIN_POINTS = 18
 WINDOW_MIN_R2 = 0.995
