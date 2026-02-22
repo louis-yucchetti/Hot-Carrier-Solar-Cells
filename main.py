@@ -57,6 +57,13 @@ EXPORT_PDF = True
 # Nominal A0 used to convert Delta_mu_eff into Delta_mu.
 ASSUMED_A0 = 0.5 * (A0_HIGH_ENERGY_MIN + A0_HIGH_ENERGY_MAX)
 
+# Laser/power-balance model inputs
+LASER_WAVELENGTH_NM = 532.0
+ABSORPTIVITY_AT_LASER = 1.0
+ABSORPTIVITY_AT_LASER_SIGMA = 0.0
+PLQY_ETA = 0.0
+PLQY_ETA_SIGMA = 0.0
+
 # GaAs parameters for optional Maxwell-Boltzmann carrier estimates
 EG_EV = 1.424
 M_E_EFF = 0.067
@@ -705,6 +712,190 @@ def _safe_log_yerr(y: np.ndarray, err: np.ndarray) -> np.ndarray:
     return np.vstack([lower, upper])
 
 
+def _laser_photon_energy_from_wavelength(wavelength_nm: float) -> tuple[float, float]:
+    wavelength_m = wavelength_nm * 1e-9
+    energy_j = (H * C) / wavelength_m
+    energy_ev = energy_j / E_CHARGE
+    return float(energy_j), float(energy_ev)
+
+
+def compute_power_balance_table(
+    results_df: pd.DataFrame,
+    laser_wavelength_nm: float = LASER_WAVELENGTH_NM,
+    absorptivity_at_laser: float = ABSORPTIVITY_AT_LASER,
+    absorptivity_at_laser_sigma: float = ABSORPTIVITY_AT_LASER_SIGMA,
+    plqy_eta: float = PLQY_ETA,
+    plqy_eta_sigma: float = PLQY_ETA_SIGMA,
+    eg_ev: float = EG_EV,
+) -> pd.DataFrame:
+    """
+    Add power-balance quantities per spectrum using:
+      P_abs = A_laser * P_exc
+      phi_abs = P_abs / E_laser
+      phi_rad = eta * phi_abs
+      phi_nonrad = (1 - eta) * phi_abs
+      P_rec = phi_nonrad*(Eg + 3kBT) + phi_rad*(Eg + kBT)
+      P_th = P_abs - P_rec
+    """
+    df = results_df.copy()
+    p_exc_w_cm2 = df["intensity_w_cm2"].to_numpy(dtype=float)
+    temperature_k = df["temperature_k"].to_numpy(dtype=float)
+    temperature_err_k = df["temperature_err_total_k"].to_numpy(dtype=float)
+    temperature_err_k = np.where(
+        np.isfinite(temperature_err_k) & (temperature_err_k >= 0),
+        temperature_err_k,
+        0.0,
+    )
+
+    e_laser_j, e_laser_ev = _laser_photon_energy_from_wavelength(laser_wavelength_nm)
+    eg_j = eg_ev * E_CHARGE
+
+    p_abs_w_cm2 = absorptivity_at_laser * p_exc_w_cm2
+    p_abs_err_w_cm2 = np.abs(p_exc_w_cm2) * absorptivity_at_laser_sigma
+
+    phi_abs_cm2_s = p_abs_w_cm2 / e_laser_j
+    phi_abs_err_cm2_s = np.abs(p_exc_w_cm2 / e_laser_j) * absorptivity_at_laser_sigma
+
+    phi_rad_cm2_s = plqy_eta * phi_abs_cm2_s
+    phi_nonrad_cm2_s = (1.0 - plqy_eta) * phi_abs_cm2_s
+
+    d_phi_rad_d_a = plqy_eta * p_exc_w_cm2 / e_laser_j
+    d_phi_rad_d_eta = phi_abs_cm2_s
+    phi_rad_err_cm2_s = np.sqrt(
+        (d_phi_rad_d_a * absorptivity_at_laser_sigma) ** 2
+        + (d_phi_rad_d_eta * plqy_eta_sigma) ** 2
+    )
+
+    d_phi_nonrad_d_a = (1.0 - plqy_eta) * p_exc_w_cm2 / e_laser_j
+    d_phi_nonrad_d_eta = -phi_abs_cm2_s
+    phi_nonrad_err_cm2_s = np.sqrt(
+        (d_phi_nonrad_d_a * absorptivity_at_laser_sigma) ** 2
+        + (d_phi_nonrad_d_eta * plqy_eta_sigma) ** 2
+    )
+
+    valid_temperature = np.isfinite(temperature_k) & (temperature_k > 0)
+    beta_j = np.where(
+        valid_temperature,
+        eg_j + (3.0 - 2.0 * plqy_eta) * K_B * temperature_k,
+        np.nan,
+    )
+
+    e_nonrad_j = np.where(valid_temperature, eg_j + 3.0 * K_B * temperature_k, np.nan)
+    e_rad_j = np.where(valid_temperature, eg_j + K_B * temperature_k, np.nan)
+    e_nonrad_ev = e_nonrad_j / E_CHARGE
+    e_rad_ev = e_rad_j / E_CHARGE
+
+    p_nonrad_w_cm2 = phi_nonrad_cm2_s * e_nonrad_j
+    p_rad_w_cm2 = phi_rad_cm2_s * e_rad_j
+    p_rec_w_cm2 = p_nonrad_w_cm2 + p_rad_w_cm2
+    p_th_w_cm2 = p_abs_w_cm2 - p_rec_w_cm2
+
+    prefactor = np.where(
+        valid_temperature,
+        absorptivity_at_laser * p_exc_w_cm2 / e_laser_j,
+        np.nan,
+    )
+    cooling_factor = np.where(valid_temperature, 1.0 - beta_j / e_laser_j, np.nan)
+
+    d_p_rec_d_a = np.where(valid_temperature, p_exc_w_cm2 * beta_j / e_laser_j, np.nan)
+    d_p_rec_d_eta = np.where(
+        valid_temperature,
+        prefactor * (-2.0 * K_B * temperature_k),
+        np.nan,
+    )
+    d_p_rec_d_t = np.where(
+        valid_temperature,
+        prefactor * (3.0 - 2.0 * plqy_eta) * K_B,
+        np.nan,
+    )
+    p_rec_err_w_cm2 = np.sqrt(
+        (d_p_rec_d_a * absorptivity_at_laser_sigma) ** 2
+        + (d_p_rec_d_eta * plqy_eta_sigma) ** 2
+        + (d_p_rec_d_t * temperature_err_k) ** 2
+    )
+
+    d_p_th_d_a = np.where(valid_temperature, p_exc_w_cm2 * cooling_factor, np.nan)
+    d_p_th_d_eta = np.where(
+        valid_temperature,
+        prefactor * (2.0 * K_B * temperature_k),
+        np.nan,
+    )
+    d_p_th_d_t = np.where(
+        valid_temperature,
+        -prefactor * (3.0 - 2.0 * plqy_eta) * K_B,
+        np.nan,
+    )
+    p_th_err_w_cm2 = np.sqrt(
+        (d_p_th_d_a * absorptivity_at_laser_sigma) ** 2
+        + (d_p_th_d_eta * plqy_eta_sigma) ** 2
+        + (d_p_th_d_t * temperature_err_k) ** 2
+    )
+
+    recombination_energy_per_pair_ev = beta_j / E_CHARGE
+    thermalized_energy_per_pair_ev = np.where(
+        valid_temperature,
+        e_laser_ev - recombination_energy_per_pair_ev,
+        np.nan,
+    )
+
+    thermalized_fraction = np.divide(
+        p_th_w_cm2,
+        p_abs_w_cm2,
+        out=np.full_like(p_th_w_cm2, np.nan),
+        where=np.isfinite(p_abs_w_cm2) & (p_abs_w_cm2 > 0),
+    )
+    recombination_fraction = np.divide(
+        p_rec_w_cm2,
+        p_abs_w_cm2,
+        out=np.full_like(p_rec_w_cm2, np.nan),
+        where=np.isfinite(p_abs_w_cm2) & (p_abs_w_cm2 > 0),
+    )
+    radiative_fraction = np.divide(
+        p_rad_w_cm2,
+        p_abs_w_cm2,
+        out=np.full_like(p_rad_w_cm2, np.nan),
+        where=np.isfinite(p_abs_w_cm2) & (p_abs_w_cm2 > 0),
+    )
+    nonradiative_fraction = np.divide(
+        p_nonrad_w_cm2,
+        p_abs_w_cm2,
+        out=np.full_like(p_nonrad_w_cm2, np.nan),
+        where=np.isfinite(p_abs_w_cm2) & (p_abs_w_cm2 > 0),
+    )
+
+    df["laser_wavelength_nm"] = float(laser_wavelength_nm)
+    df["laser_photon_energy_ev"] = float(e_laser_ev)
+    df["absorptivity_at_laser"] = float(absorptivity_at_laser)
+    df["absorptivity_at_laser_sigma"] = float(absorptivity_at_laser_sigma)
+    df["plqy_eta"] = float(plqy_eta)
+    df["plqy_eta_sigma"] = float(plqy_eta_sigma)
+    df["absorbed_power_w_cm2"] = p_abs_w_cm2
+    df["absorbed_power_err_w_cm2"] = p_abs_err_w_cm2
+    df["absorbed_photon_flux_cm2_s"] = phi_abs_cm2_s
+    df["absorbed_photon_flux_err_cm2_s"] = phi_abs_err_cm2_s
+    df["radiative_photon_flux_cm2_s"] = phi_rad_cm2_s
+    df["radiative_photon_flux_err_cm2_s"] = phi_rad_err_cm2_s
+    df["nonradiative_photon_flux_cm2_s"] = phi_nonrad_cm2_s
+    df["nonradiative_photon_flux_err_cm2_s"] = phi_nonrad_err_cm2_s
+    df["recombination_energy_nonrad_ev"] = e_nonrad_ev
+    df["recombination_energy_rad_ev"] = e_rad_ev
+    df["recombination_energy_avg_ev"] = recombination_energy_per_pair_ev
+    df["thermalized_energy_per_pair_ev"] = thermalized_energy_per_pair_ev
+    df["nonradiative_power_w_cm2"] = p_nonrad_w_cm2
+    df["radiative_power_w_cm2"] = p_rad_w_cm2
+    df["recombination_power_w_cm2"] = p_rec_w_cm2
+    df["recombination_power_err_w_cm2"] = p_rec_err_w_cm2
+    df["thermalized_power_w_cm2"] = p_th_w_cm2
+    df["thermalized_power_err_w_cm2"] = p_th_err_w_cm2
+    df["power_balance_closure_w_cm2"] = p_abs_w_cm2 - (p_th_w_cm2 + p_rec_w_cm2)
+    df["carrier_balance_closure_cm2_s"] = phi_abs_cm2_s - (phi_rad_cm2_s + phi_nonrad_cm2_s)
+    df["thermalized_fraction"] = thermalized_fraction
+    df["recombination_fraction"] = recombination_fraction
+    df["radiative_fraction"] = radiative_fraction
+    df["nonradiative_fraction"] = nonradiative_fraction
+    return df
+
+
 def auto_select_fit_window(
     energy_ev: np.ndarray,
     intensity: np.ndarray,
@@ -1267,12 +1458,176 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     plt.close(fig)
 
 
+def plot_power_balance(results_df: pd.DataFrame, outpath: Path) -> None:
+    x_abs = results_df["absorbed_power_w_cm2"].to_numpy(dtype=float)
+    x_abs_err = results_df["absorbed_power_err_w_cm2"].to_numpy(dtype=float)
+    y_th = results_df["thermalized_power_w_cm2"].to_numpy(dtype=float)
+    y_th_err = results_df["thermalized_power_err_w_cm2"].to_numpy(dtype=float)
+    y_rec = results_df["recombination_power_w_cm2"].to_numpy(dtype=float)
+    y_rec_err = results_df["recombination_power_err_w_cm2"].to_numpy(dtype=float)
+
+    valid = (
+        np.isfinite(x_abs)
+        & np.isfinite(y_th)
+        & np.isfinite(y_rec)
+        & (x_abs > 0)
+        & (y_th > 0)
+        & (y_rec > 0)
+    )
+    if np.count_nonzero(valid) < 2:
+        return
+
+    x_plot = x_abs[valid]
+    x_err_plot = x_abs_err[valid]
+    y_th_plot = y_th[valid]
+    y_th_err_plot = y_th_err[valid]
+    y_rec_plot = y_rec[valid]
+    y_rec_err_plot = y_rec_err[valid]
+
+    fig, (ax0, ax1) = plt.subplots(
+        2,
+        1,
+        figsize=(8.2, 7.0),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.35, 1.0], "hspace": 0.12},
+    )
+
+    ax0.errorbar(
+        x_plot,
+        y_th_plot,
+        xerr=x_err_plot,
+        yerr=_safe_log_yerr(y=y_th_plot, err=y_th_err_plot),
+        fmt="o",
+        ms=4.8,
+        lw=1.2,
+        capsize=2.3,
+        color="#1565c0",
+        label=r"$P_{\mathrm{thermalized}}$",
+    )
+    ax0.errorbar(
+        x_plot,
+        y_rec_plot,
+        xerr=x_err_plot,
+        yerr=_safe_log_yerr(y=y_rec_plot, err=y_rec_err_plot),
+        fmt="s",
+        ms=4.0,
+        lw=1.0,
+        capsize=2.0,
+        color="#ef6c00",
+        label=r"$P_{\mathrm{recomb}}$",
+    )
+
+    x_line = np.logspace(
+        np.log10(float(np.min(x_plot)) * 0.95),
+        np.log10(float(np.max(x_plot)) * 1.05),
+        200,
+    )
+    ax0.plot(
+        x_line,
+        x_line,
+        ls="--",
+        lw=1.2,
+        color="0.25",
+        label=r"$P_{\mathrm{abs}}$ reference",
+    )
+
+    style_axes(ax0, logx=True, logy=True)
+    ax0.set_ylabel(r"Power density (W cm$^{-2}$)")
+    ax0.set_title("Power balance from excitation to thermalized and recombination channels")
+    ax0.legend(loc="best", fontsize=9)
+    ax0.text(
+        0.985,
+        0.04,
+        (
+            rf"$\lambda_{{laser}}$={LASER_WAVELENGTH_NM:.0f} nm, "
+            rf"$A(E_{{laser}})$={ABSORPTIVITY_AT_LASER:.3f}, "
+            rf"$\eta$={PLQY_ETA:.3f}"
+        ),
+        transform=ax0.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=9,
+        bbox={
+            "facecolor": "white",
+            "edgecolor": "0.3",
+            "boxstyle": "square,pad=0.22",
+            "alpha": 0.93,
+        },
+    )
+
+    frac_th = results_df["thermalized_fraction"].to_numpy(dtype=float)
+    frac_rec = results_df["recombination_fraction"].to_numpy(dtype=float)
+    frac_rad = results_df["radiative_fraction"].to_numpy(dtype=float)
+    frac_nonrad = results_df["nonradiative_fraction"].to_numpy(dtype=float)
+    valid_frac = np.isfinite(x_abs) & (x_abs > 0)
+
+    ax1.plot(
+        x_abs[valid_frac],
+        frac_th[valid_frac],
+        "o-",
+        ms=4.0,
+        color="#1565c0",
+        label=r"$P_{\mathrm{thermalized}}/P_{\mathrm{abs}}$",
+    )
+    ax1.plot(
+        x_abs[valid_frac],
+        frac_rec[valid_frac],
+        "s-",
+        ms=3.7,
+        color="#ef6c00",
+        label=r"$P_{\mathrm{recomb}}/P_{\mathrm{abs}}$",
+    )
+    ax1.plot(
+        x_abs[valid_frac],
+        frac_rad[valid_frac],
+        "^-",
+        ms=3.4,
+        color="#6a1b9a",
+        alpha=0.85,
+        label=r"$P_{\mathrm{rad}}/P_{\mathrm{abs}}$",
+    )
+    ax1.plot(
+        x_abs[valid_frac],
+        frac_nonrad[valid_frac],
+        "v-",
+        ms=3.4,
+        color="#2e7d32",
+        alpha=0.85,
+        label=r"$P_{\mathrm{nonrad}}/P_{\mathrm{abs}}$",
+    )
+    ax1.axhline(1.0, color="0.25", lw=1.0, ls="--")
+    style_axes(ax1, logx=True)
+    ax1.set_xlabel(r"Absorbed power density, $P_{\mathrm{abs}}$ (W cm$^{-2}$)")
+    ax1.set_ylabel("Fraction")
+    frac_th_finite = frac_th[valid_frac & np.isfinite(frac_th)]
+    if frac_th_finite.size > 0:
+        y_bottom = min(-0.05, float(np.min(frac_th_finite)) - 0.05)
+    else:
+        y_bottom = -0.05
+    ax1.set_ylim(bottom=y_bottom, top=1.25)
+    ax1.legend(loc="best", fontsize=8.5)
+
+    fig.subplots_adjust(left=0.12, right=0.97, bottom=0.08, top=0.95, hspace=0.16)
+    save_figure(fig, outpath)
+    plt.close(fig)
+
+
 def main() -> None:
     setup_plot_style()
     if ASSUMED_A0 <= 0:
         raise ValueError("ASSUMED_A0 must be strictly positive.")
     if A0_SIGMA < 0:
         raise ValueError("A0_SIGMA must be non-negative.")
+    if LASER_WAVELENGTH_NM <= 0:
+        raise ValueError("LASER_WAVELENGTH_NM must be strictly positive.")
+    if (ABSORPTIVITY_AT_LASER < 0) or (ABSORPTIVITY_AT_LASER > 1):
+        raise ValueError("ABSORPTIVITY_AT_LASER must be in [0, 1].")
+    if ABSORPTIVITY_AT_LASER_SIGMA < 0:
+        raise ValueError("ABSORPTIVITY_AT_LASER_SIGMA must be non-negative.")
+    if (PLQY_ETA < 0) or (PLQY_ETA > 1):
+        raise ValueError("PLQY_ETA must be in [0, 1].")
+    if PLQY_ETA_SIGMA < 0:
+        raise ValueError("PLQY_ETA_SIGMA must be non-negative.")
     if (FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE <= 0) or (
         FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE > 1
     ):
@@ -1364,14 +1719,25 @@ def main() -> None:
         )
 
     results_df = pd.DataFrame([r.__dict__ for r in all_results])
+    results_df = compute_power_balance_table(
+        results_df=results_df,
+        laser_wavelength_nm=LASER_WAVELENGTH_NM,
+        absorptivity_at_laser=ABSORPTIVITY_AT_LASER,
+        absorptivity_at_laser_sigma=ABSORPTIVITY_AT_LASER_SIGMA,
+        plqy_eta=PLQY_ETA,
+        plqy_eta_sigma=PLQY_ETA_SIGMA,
+        eg_ev=EG_EV,
+    )
     results_df.to_csv(out_dir / "fit_results.csv", index=False)
     plot_summary(results_df, out_dir / "parameters_vs_intensity.png")
+    plot_power_balance(results_df, out_dir / "thermalized_power_vs_absorbed.png")
 
     print("Done.")
     print(f"Raw spectra plot: {out_dir / 'all_spectra_logscale.png'}")
     print(f"Spectrum fits:    {fit_dir}")
     print(f"Results table:    {out_dir / 'fit_results.csv'}")
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
+    print(f"Power figure:     {out_dir / 'thermalized_power_vs_absorbed.png'}")
     if AUTO_SELECT_FIT_WINDOW:
         print(
             "Fit window mode:  AUTO per spectrum | "
@@ -1396,6 +1762,12 @@ def main() -> None:
             "Uncertainty mode: chi^2 + A0 | "
             f"A0={ASSUMED_A0:.4f}±{A0_SIGMA:.4f} ({A0_UNCERTAINTY_MODEL})"
         )
+    print(
+        "Power model:      "
+        rf"lambda_laser={LASER_WAVELENGTH_NM:.1f} nm, "
+        rf"A_laser={ABSORPTIVITY_AT_LASER:.4f}±{ABSORPTIVITY_AT_LASER_SIGMA:.4f}, "
+        rf"PLQY eta={PLQY_ETA:.4f}±{PLQY_ETA_SIGMA:.4f}"
+    )
 
 
 if __name__ == "__main__":
