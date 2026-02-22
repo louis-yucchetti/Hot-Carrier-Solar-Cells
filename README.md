@@ -6,7 +6,8 @@ The code:
 - extracts carrier temperature `T` and quasi-Fermi level splitting `Delta_mu` from the high-energy PL tail,
 - propagates uncertainties from fit statistics, fit-range choice, and absorptivity `A0`,
 - computes `mu_e`, `mu_h`, and carrier density `n` (Maxwell-Boltzmann model),
-- computes thermalized/recombination power channels from excitation power using detailed balance.
+- computes thermalized/recombination power channels from excitation power using detailed balance,
+- generates comparison-ready `P_th(n,T)` plots and optional experiment-vs-Tsai overlays.
 
 Main script: `main.py`
 
@@ -93,6 +94,13 @@ Using PLQY `eta = phi_rad/(phi_rad + phi_nonrad)`:
 
 This is exactly what `compute_power_balance_table(...)` implements.
 
+The code also converts area-based power (`W cm^-2`) to volumetric power (`W cm^-3`) using active-layer thickness `d`:
+
+`P_vol = P_area / d_cm`
+
+with `d_cm = d_nm * 1e-7`.  
+For your sample, `d = 950 nm` is used by default (`ACTIVE_LAYER_THICKNESS_NM`).
+
 ## 2.4 If radiative recombination is not negligible
 
 It is handled explicitly through `eta`:
@@ -101,6 +109,19 @@ It is handled explicitly through `eta`:
   `E_g + 3k_B T` toward `E_g + k_B T`.
 
 Result: for fixed `P_abs` and `T`, higher `eta` increases `P_thermalized` in this model.
+
+## 2.5 Quantity Compared to Tsai2018
+
+The comparison target is:
+
+`P_th(n,T)` (thermalized/cooling power density as a function of carrier density and carrier temperature).
+
+From CWPL, each excitation condition gives one experimental triplet:
+- `n` from GPL + MB extraction,
+- `T` from GPL slope,
+- `P_th` from the detailed-balance power model above (reported in `W cm^-3`).
+
+So the experiment provides sampled points on the manifold `P_th(n,T)`; Tsai-model simulation should produce a continuous or gridded version of the same function.
 
 ## 3) What the Code Does
 
@@ -121,10 +142,13 @@ Pipeline in `main.py`:
      - full scan domain,
      - `95% AICc-weight window envelope`.
 5. Aggregate all spectra into `fit_results.csv`.
-6. Compute power-balance quantities (`P_abs`, `P_rec`, `P_thermalized`, fluxes, fractions).
+6. Compute power-balance quantities (`P_abs`, `P_rec`, `P_thermalized`, fluxes, fractions) in both
+   area units (`W cm^-2`) and volumetric units (`W cm^-3`) using `d=950 nm` (configurable).
 7. Plot:
    - parameter trends (`outputs/parameters_vs_intensity.*`)
    - power balance (`outputs/thermalized_power_vs_absorbed.*`)
+   - `P_th(n,T)` comparison figure (`outputs/pth_nT_comparison.*`)
+   - if a Tsai table is provided, overlay model contours and produce parity-style comparison.
 
 ## 4) Uncertainty Model
 
@@ -177,11 +201,43 @@ Likely known from setup, but verify:
 5. `LASER_WAVELENGTH_NM` (currently `532.0`)
 - Should match experiment exactly.
 
+6. `ACTIVE_LAYER_THICKNESS_NM` (currently `950.0`)
+- Used to convert `W cm^-2` to `W cm^-3` for `P_th(n,T)` comparison.
+- Keep consistent with the actual active region used in the Tsai-model simulation.
+
+7. `TSAI_MODEL_TABLE_CSV` (default empty string)
+- Optional CSV input for direct overlay/parity comparison.
+- Required columns: `n_cm3`, `temperature_k`, `p_th_w_cm3`.
+
 `A0` for high-energy GPL correction is already parameterized from your OptiPV interval:
 - `A0_HIGH_ENERGY_MIN = 0.459`
 - `A0_HIGH_ENERGY_MAX = 0.555`
 
-## 6) Outputs
+## 6) How to Compare CWPL with Tsai2018
+
+Minimal workflow:
+
+1. Run CWPL extraction (`main.py`) to obtain experimental points `(n_i, T_i, P_th,i)`.
+2. Use volumetric cooling power from CSV: `thermalized_power_w_cm3`.
+3. Simulate Tsai microscopic model on a grid covering your experimental domain in `n` and `T`.
+4. Export model results to CSV with columns:
+   - `n_cm3`
+   - `temperature_k`
+   - `p_th_w_cm3`
+5. Set `TSAI_MODEL_TABLE_CSV` to that file and rerun.
+6. Inspect:
+   - `outputs/pth_nT_comparison.png`:
+     - left panel: experimental manifold `P_th(n,T)` (color map) + Tsai contours,
+     - right panel: pointwise parity-style comparison at measured `(n,T)`.
+   - `outputs/pth_experiment_vs_tsai.csv`:
+     - includes nearest-model prediction at each experimental point and ratio `pth_ratio_tsai_over_exp`.
+
+Interpretation strategy:
+- If Tsai contours align with the experimental point cloud in `(n,T)` space, the model captures the cooling manifold shape.
+- If parity points cluster around the 1:1 line, model magnitude is consistent.
+- Systematic ratio trends vs intensity, `n`, or `T` indicate missing physics/parameter mismatch (e.g. PLQY, absorption, hot-phonon lifetime assumptions).
+
+## 7) Outputs
 
 Generated in `outputs/`:
 
@@ -194,13 +250,17 @@ Generated in `outputs/`:
     - `nonradiative_power_w_cm2`
     - `recombination_power_w_cm2`
     - `thermalized_power_w_cm2`
+    - `thermalized_power_w_cm3`
+    - `thermalized_power_per_carrier_ev_s`
     - fractions and closure diagnostics
 - `all_spectra_logscale.png/.pdf`
 - `parameters_vs_intensity.png/.pdf`
 - `thermalized_power_vs_absorbed.png/.pdf`
+- `pth_nT_comparison.png/.pdf`
+- `pth_experiment_vs_tsai.csv` (only if `TSAI_MODEL_TABLE_CSV` is provided)
 - `fits/fit_spectrum_XX.png/.pdf` diagnostics per spectrum
 
-## 7) Run
+## 8) Run
 
 Requirements:
 - Python 3.10+
@@ -215,20 +275,22 @@ pip install numpy pandas matplotlib
 .\.venv\Scripts\python.exe main.py
 ```
 
-## 8) Main Assumptions and Limits
+## 9) Main Assumptions and Limits
 
 - High-energy approximation for GPL tail is valid in selected window.
 - `A(E)` treated as approximately constant in that high-energy fit window.
 - MB statistics used for `mu_e`, `mu_h`, `n` (not full Fermi-Dirac).
 - Power model uses your specified recombination channel energies:
   `E_g + 3k_B T` (non-rad), `E_g + k_B T` (rad).
-- Power outputs are per area (`W cm^-2`) because excitation input is per area.
+- Power is reported both per area (`W cm^-2`) and per volume (`W cm^-3`) using a uniform active thickness.
+- Tsai parity currently uses nearest-point lookup from the supplied model table (not a full PDE/transport re-solve inside this script).
 
-## 9) Suggested Next Improvements
+## 10) Suggested Next Improvements
 
 1. Replace MB carrier statistics with Fermi-Dirac + neutrality solver for degenerate regimes.
 2. Use measured `A(E)` spectral dependence directly in fit (instead of constant `A0` in window).
 3. Add optional weighted/robust regression for low-SNR high-energy tails.
-4. Introduce Monte Carlo uncertainty propagation for the full power-balance chain.
-5. Add CLI/config-file interface for experiment-specific runs (laser wavelength, PLQY, absorptivity, etc.).
-6. Add automated consistency checks/alerts when `P_thermalized < 0` or when fitted windows become unstable.
+4. Replace nearest-point Tsai matching by smooth interpolation on `(log10 n, T)` plus uncertainty on model predictions.
+5. Introduce Monte Carlo uncertainty propagation for the full power-balance and experiment-vs-theory ratio.
+6. Add CLI/config-file interface for experiment-specific runs (laser wavelength, PLQY, thickness, Tsai table path, etc.).
+7. Add automated consistency checks/alerts when `P_thermalized < 0`, closure errors drift, or fitted windows become unstable.

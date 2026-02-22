@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import cm
 from matplotlib.colors import LogNorm
+from matplotlib.tri import Triangulation
 from matplotlib.ticker import AutoMinorLocator, LogLocator, NullFormatter
 
 
@@ -63,6 +64,11 @@ ABSORPTIVITY_AT_LASER = 0.6
 ABSORPTIVITY_AT_LASER_SIGMA = 0.0
 PLQY_ETA = 0.0
 PLQY_ETA_SIGMA = 0.0
+ACTIVE_LAYER_THICKNESS_NM = 950.0
+
+# Optional Tsai-model lookup table for direct experiment/theory comparison.
+# CSV columns required: n_cm3, temperature_k, p_th_w_cm3
+TSAI_MODEL_TABLE_CSV = ""
 
 # GaAs parameters for optional Maxwell-Boltzmann carrier estimates
 EG_EV = 1.424
@@ -726,6 +732,7 @@ def compute_power_balance_table(
     absorptivity_at_laser_sigma: float = ABSORPTIVITY_AT_LASER_SIGMA,
     plqy_eta: float = PLQY_ETA,
     plqy_eta_sigma: float = PLQY_ETA_SIGMA,
+    active_layer_thickness_nm: float = ACTIVE_LAYER_THICKNESS_NM,
     eg_ev: float = EG_EV,
 ) -> pd.DataFrame:
     """
@@ -736,6 +743,8 @@ def compute_power_balance_table(
       phi_nonrad = (1 - eta) * phi_abs
       P_rec = phi_nonrad*(Eg + 3kBT) + phi_rad*(Eg + kBT)
       P_th = P_abs - P_rec
+    Then convert area-based powers (W cm^-2) to volumetric powers (W cm^-3)
+    using the active-layer thickness.
     """
     df = results_df.copy()
     p_exc_w_cm2 = df["intensity_w_cm2"].to_numpy(dtype=float)
@@ -744,6 +753,18 @@ def compute_power_balance_table(
     temperature_err_k = np.where(
         np.isfinite(temperature_err_k) & (temperature_err_k >= 0),
         temperature_err_k,
+        0.0,
+    )
+    carrier_density_cm3 = df["carrier_density_cm3"].to_numpy(dtype=float)
+    if "carrier_density_err_total_cm3" in df.columns:
+        carrier_density_err_cm3 = df["carrier_density_err_total_cm3"].to_numpy(
+            dtype=float
+        )
+    else:
+        carrier_density_err_cm3 = np.zeros_like(carrier_density_cm3, dtype=float)
+    carrier_density_err_cm3 = np.where(
+        np.isfinite(carrier_density_err_cm3) & (carrier_density_err_cm3 >= 0),
+        carrier_density_err_cm3,
         0.0,
     )
 
@@ -831,6 +852,16 @@ def compute_power_balance_table(
         + (d_p_th_d_t * temperature_err_k) ** 2
     )
 
+    thickness_cm = active_layer_thickness_nm * 1e-7
+    p_abs_w_cm3 = p_abs_w_cm2 / thickness_cm
+    p_abs_err_w_cm3 = p_abs_err_w_cm2 / thickness_cm
+    p_nonrad_w_cm3 = p_nonrad_w_cm2 / thickness_cm
+    p_rad_w_cm3 = p_rad_w_cm2 / thickness_cm
+    p_rec_w_cm3 = p_rec_w_cm2 / thickness_cm
+    p_rec_err_w_cm3 = p_rec_err_w_cm2 / thickness_cm
+    p_th_w_cm3 = p_th_w_cm2 / thickness_cm
+    p_th_err_w_cm3 = p_th_err_w_cm2 / thickness_cm
+
     recombination_energy_per_pair_ev = beta_j / E_CHARGE
     thermalized_energy_per_pair_ev = np.where(
         valid_temperature,
@@ -862,6 +893,33 @@ def compute_power_balance_table(
         out=np.full_like(p_nonrad_w_cm2, np.nan),
         where=np.isfinite(p_abs_w_cm2) & (p_abs_w_cm2 > 0),
     )
+    thermalized_power_per_carrier_ev_s = np.divide(
+        p_th_w_cm3,
+        carrier_density_cm3 * E_CHARGE,
+        out=np.full_like(p_th_w_cm3, np.nan),
+        where=np.isfinite(p_th_w_cm3)
+        & np.isfinite(carrier_density_cm3)
+        & (carrier_density_cm3 > 0),
+    )
+    rel_p_th = np.divide(
+        p_th_err_w_cm3,
+        np.abs(p_th_w_cm3),
+        out=np.zeros_like(p_th_w_cm3),
+        where=np.isfinite(p_th_err_w_cm3)
+        & np.isfinite(p_th_w_cm3)
+        & (np.abs(p_th_w_cm3) > 0),
+    )
+    rel_n = np.divide(
+        carrier_density_err_cm3,
+        carrier_density_cm3,
+        out=np.zeros_like(carrier_density_cm3),
+        where=np.isfinite(carrier_density_err_cm3)
+        & np.isfinite(carrier_density_cm3)
+        & (carrier_density_cm3 > 0),
+    )
+    thermalized_power_per_carrier_err_ev_s = (
+        np.abs(thermalized_power_per_carrier_ev_s) * np.sqrt(rel_p_th**2 + rel_n**2)
+    )
 
     df["laser_wavelength_nm"] = float(laser_wavelength_nm)
     df["laser_photon_energy_ev"] = float(e_laser_ev)
@@ -869,8 +927,12 @@ def compute_power_balance_table(
     df["absorptivity_at_laser_sigma"] = float(absorptivity_at_laser_sigma)
     df["plqy_eta"] = float(plqy_eta)
     df["plqy_eta_sigma"] = float(plqy_eta_sigma)
+    df["active_layer_thickness_nm"] = float(active_layer_thickness_nm)
+    df["active_layer_thickness_cm"] = float(thickness_cm)
     df["absorbed_power_w_cm2"] = p_abs_w_cm2
     df["absorbed_power_err_w_cm2"] = p_abs_err_w_cm2
+    df["absorbed_power_w_cm3"] = p_abs_w_cm3
+    df["absorbed_power_err_w_cm3"] = p_abs_err_w_cm3
     df["absorbed_photon_flux_cm2_s"] = phi_abs_cm2_s
     df["absorbed_photon_flux_err_cm2_s"] = phi_abs_err_cm2_s
     df["radiative_photon_flux_cm2_s"] = phi_rad_cm2_s
@@ -887,7 +949,18 @@ def compute_power_balance_table(
     df["recombination_power_err_w_cm2"] = p_rec_err_w_cm2
     df["thermalized_power_w_cm2"] = p_th_w_cm2
     df["thermalized_power_err_w_cm2"] = p_th_err_w_cm2
+    df["nonradiative_power_w_cm3"] = p_nonrad_w_cm3
+    df["radiative_power_w_cm3"] = p_rad_w_cm3
+    df["recombination_power_w_cm3"] = p_rec_w_cm3
+    df["recombination_power_err_w_cm3"] = p_rec_err_w_cm3
+    df["thermalized_power_w_cm3"] = p_th_w_cm3
+    df["thermalized_power_err_w_cm3"] = p_th_err_w_cm3
+    df["thermalized_power_per_carrier_ev_s"] = thermalized_power_per_carrier_ev_s
+    df["thermalized_power_per_carrier_err_ev_s"] = (
+        thermalized_power_per_carrier_err_ev_s
+    )
     df["power_balance_closure_w_cm2"] = p_abs_w_cm2 - (p_th_w_cm2 + p_rec_w_cm2)
+    df["power_balance_closure_w_cm3"] = p_abs_w_cm3 - (p_th_w_cm3 + p_rec_w_cm3)
     df["carrier_balance_closure_cm2_s"] = phi_abs_cm2_s - (phi_rad_cm2_s + phi_nonrad_cm2_s)
     df["thermalized_fraction"] = thermalized_fraction
     df["recombination_fraction"] = recombination_fraction
@@ -1458,6 +1531,302 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     plt.close(fig)
 
 
+def load_tsai_model_table(table_csv: str) -> pd.DataFrame | None:
+    if not table_csv:
+        return None
+
+    table_path = Path(table_csv).expanduser()
+    if not table_path.is_file():
+        print(f"Warning: Tsai model table not found, skipping: {table_path}")
+        return None
+
+    model_df = pd.read_csv(table_path)
+    required_columns = {"n_cm3", "temperature_k", "p_th_w_cm3"}
+    missing = sorted(required_columns - set(model_df.columns))
+    if missing:
+        raise ValueError(
+            "Tsai model table is missing required columns: "
+            + ", ".join(missing)
+        )
+
+    model_df = model_df[list(required_columns)].copy()
+    model_df = model_df.apply(pd.to_numeric, errors="coerce")
+    model_df = model_df.replace([np.inf, -np.inf], np.nan).dropna()
+    model_df = model_df[
+        (model_df["n_cm3"] > 0)
+        & (model_df["temperature_k"] > 0)
+        & (model_df["p_th_w_cm3"] > 0)
+    ]
+    if model_df.shape[0] < 3:
+        print("Warning: Tsai model table has fewer than 3 valid points; skipping.")
+        return None
+    return model_df
+
+
+def _nearest_theory_prediction(
+    exp_n_cm3: np.ndarray,
+    exp_t_k: np.ndarray,
+    theory_n_cm3: np.ndarray,
+    theory_t_k: np.ndarray,
+    theory_pth_w_cm3: np.ndarray,
+) -> np.ndarray:
+    if theory_n_cm3.size == 0:
+        return np.full_like(exp_n_cm3, np.nan, dtype=float)
+
+    exp_log_n = np.log10(exp_n_cm3)[:, None]
+    theory_log_n = np.log10(theory_n_cm3)[None, :]
+    exp_t = exp_t_k[:, None]
+    theory_t = theory_t_k[None, :]
+
+    scale_log_n = max(float(np.ptp(np.log10(theory_n_cm3))), 1e-9)
+    scale_t = max(float(np.ptp(theory_t_k)), 1e-9)
+    dist2 = ((exp_log_n - theory_log_n) / scale_log_n) ** 2 + (
+        (exp_t - theory_t) / scale_t
+    ) ** 2
+    nearest_idx = np.argmin(dist2, axis=1)
+    return theory_pth_w_cm3[nearest_idx]
+
+
+def plot_pth_nt_comparison(
+    results_df: pd.DataFrame,
+    outpath: Path,
+    theory_df: pd.DataFrame | None = None,
+) -> pd.DataFrame | None:
+    n_cm3 = results_df["carrier_density_cm3"].to_numpy(dtype=float)
+    n_err_cm3 = results_df["carrier_density_err_total_cm3"].to_numpy(dtype=float)
+    temperature_k = results_df["temperature_k"].to_numpy(dtype=float)
+    temperature_err_k = results_df["temperature_err_total_k"].to_numpy(dtype=float)
+    p_th_w_cm3 = results_df["thermalized_power_w_cm3"].to_numpy(dtype=float)
+    p_th_err_w_cm3 = results_df["thermalized_power_err_w_cm3"].to_numpy(dtype=float)
+    intensity = results_df["intensity_w_cm2"].to_numpy(dtype=float)
+
+    valid = (
+        np.isfinite(n_cm3)
+        & np.isfinite(temperature_k)
+        & np.isfinite(p_th_w_cm3)
+        & (n_cm3 > 0)
+        & (temperature_k > 0)
+        & (p_th_w_cm3 > 0)
+    )
+    if np.count_nonzero(valid) < 3:
+        return None
+
+    n_plot = n_cm3[valid]
+    n_err_plot = np.where(
+        np.isfinite(n_err_cm3[valid]) & (n_err_cm3[valid] >= 0),
+        n_err_cm3[valid],
+        0.0,
+    )
+    t_plot = temperature_k[valid]
+    t_err_plot = np.where(
+        np.isfinite(temperature_err_k[valid]) & (temperature_err_k[valid] >= 0),
+        temperature_err_k[valid],
+        0.0,
+    )
+    p_th_plot = p_th_w_cm3[valid]
+    p_th_err_plot = np.where(
+        np.isfinite(p_th_err_w_cm3[valid]) & (p_th_err_w_cm3[valid] >= 0),
+        p_th_err_w_cm3[valid],
+        0.0,
+    )
+    intensity_plot = intensity[valid]
+
+    pth_norm = LogNorm(vmin=float(np.min(p_th_plot)), vmax=float(np.max(p_th_plot)))
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11.2, 4.8))
+
+    ax0.errorbar(
+        n_plot,
+        t_plot,
+        xerr=n_err_plot,
+        yerr=t_err_plot,
+        fmt="none",
+        ecolor="0.6",
+        alpha=0.38,
+        elinewidth=0.7,
+        capsize=1.8,
+        zorder=1,
+    )
+    s0 = ax0.scatter(
+        n_plot,
+        t_plot,
+        c=p_th_plot,
+        cmap="viridis",
+        norm=pth_norm,
+        s=55,
+        edgecolors="white",
+        linewidths=0.5,
+        zorder=2,
+    )
+
+    if theory_df is not None:
+        theory_n = theory_df["n_cm3"].to_numpy(dtype=float)
+        theory_t = theory_df["temperature_k"].to_numpy(dtype=float)
+        theory_p = theory_df["p_th_w_cm3"].to_numpy(dtype=float)
+        try:
+            tri = Triangulation(theory_n, theory_t)
+            level_min = max(float(np.min(theory_p)), float(np.min(p_th_plot)))
+            level_max = min(float(np.max(theory_p)), float(np.max(p_th_plot)))
+            if level_max > level_min:
+                levels = np.geomspace(level_min, level_max, 7)
+                contour = ax0.tricontour(
+                    tri,
+                    theory_p,
+                    levels=levels,
+                    colors="white",
+                    linewidths=1.0,
+                    alpha=0.9,
+                )
+                ax0.clabel(contour, inline=True, fmt="%.2e", fontsize=7)
+        except RuntimeError:
+            ax0.text(
+                0.03,
+                0.04,
+                "Tsai contour overlay skipped\n(non-triangulable model grid)",
+                transform=ax0.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=7.5,
+                bbox={
+                    "facecolor": "white",
+                    "edgecolor": "0.45",
+                    "boxstyle": "square,pad=0.2",
+                    "alpha": 0.85,
+                },
+            )
+
+    style_axes(ax0, logx=True)
+    ax0.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
+    ax0.set_ylabel(r"Carrier temperature, $T$ (K)")
+    ax0.set_title(r"Experimental manifold in $(n,T)$ colored by $P_{\mathrm{th}}$")
+    cbar0 = fig.colorbar(s0, ax=ax0, pad=0.02, fraction=0.05)
+    cbar0.set_label(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+
+    comparison_df: pd.DataFrame | None = None
+    if theory_df is not None:
+        theory_n = theory_df["n_cm3"].to_numpy(dtype=float)
+        theory_t = theory_df["temperature_k"].to_numpy(dtype=float)
+        theory_p = theory_df["p_th_w_cm3"].to_numpy(dtype=float)
+        p_th_theory_at_exp = _nearest_theory_prediction(
+            exp_n_cm3=n_plot,
+            exp_t_k=t_plot,
+            theory_n_cm3=theory_n,
+            theory_t_k=theory_t,
+            theory_pth_w_cm3=theory_p,
+        )
+        valid_cmp = (
+            np.isfinite(p_th_theory_at_exp)
+            & (p_th_theory_at_exp > 0)
+            & np.isfinite(p_th_plot)
+            & (p_th_plot > 0)
+        )
+        if np.count_nonzero(valid_cmp) >= 2:
+            ax1.errorbar(
+                p_th_plot[valid_cmp],
+                p_th_theory_at_exp[valid_cmp],
+                xerr=_safe_log_yerr(
+                    y=p_th_plot[valid_cmp],
+                    err=p_th_err_plot[valid_cmp],
+                ),
+                fmt="none",
+                ecolor="0.55",
+                alpha=0.35,
+                elinewidth=0.8,
+                capsize=1.8,
+            )
+            s1 = ax1.scatter(
+                p_th_plot[valid_cmp],
+                p_th_theory_at_exp[valid_cmp],
+                c=intensity_plot[valid_cmp],
+                cmap="cividis",
+                s=52,
+                edgecolors="white",
+                linewidths=0.5,
+            )
+            xy_min = float(
+                min(
+                    np.min(p_th_plot[valid_cmp]),
+                    np.min(p_th_theory_at_exp[valid_cmp]),
+                )
+            )
+            xy_max = float(
+                max(
+                    np.max(p_th_plot[valid_cmp]),
+                    np.max(p_th_theory_at_exp[valid_cmp]),
+                )
+            )
+            line = np.geomspace(xy_min * 0.9, xy_max * 1.1, 160)
+            ax1.plot(line, line, "--", color="0.25", lw=1.1, label="1:1 line")
+            style_axes(ax1, logx=True, logy=True)
+            ax1.set_xlabel(r"Experimental $P_{\mathrm{th}}$ (W cm$^{-3}$)")
+            ax1.set_ylabel(r"Tsai-model $P_{\mathrm{th}}$ (W cm$^{-3}$)")
+            ax1.set_title("Direct pointwise comparison at measured $(n,T)$")
+            ax1.legend(loc="best", fontsize=8.5)
+            cbar1 = fig.colorbar(s1, ax=ax1, pad=0.02, fraction=0.05)
+            cbar1.set_label(r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+            comparison_df = pd.DataFrame(
+                {
+                    "carrier_density_cm3": n_plot[valid_cmp],
+                    "temperature_k": t_plot[valid_cmp],
+                    "intensity_w_cm2": intensity_plot[valid_cmp],
+                    "pth_experiment_w_cm3": p_th_plot[valid_cmp],
+                    "pth_experiment_err_w_cm3": p_th_err_plot[valid_cmp],
+                    "pth_tsai_nearest_w_cm3": p_th_theory_at_exp[valid_cmp],
+                    "pth_ratio_tsai_over_exp": (
+                        p_th_theory_at_exp[valid_cmp] / p_th_plot[valid_cmp]
+                    ),
+                }
+            )
+        else:
+            style_axes(ax1)
+            ax1.set_title("Direct pointwise comparison at measured $(n,T)$")
+            ax1.text(
+                0.5,
+                0.5,
+                "Insufficient valid overlap\nbetween experiment and Tsai table",
+                transform=ax1.transAxes,
+                ha="center",
+                va="center",
+                fontsize=9,
+            )
+            ax1.set_xticks([])
+            ax1.set_yticks([])
+    else:
+        s1 = ax1.scatter(
+            n_plot,
+            p_th_plot,
+            c=t_plot,
+            cmap="plasma",
+            s=56,
+            edgecolors="white",
+            linewidths=0.5,
+            zorder=2,
+        )
+        ax1.errorbar(
+            n_plot,
+            p_th_plot,
+            xerr=n_err_plot,
+            yerr=_safe_log_yerr(y=p_th_plot, err=p_th_err_plot),
+            fmt="none",
+            ecolor="0.55",
+            alpha=0.35,
+            elinewidth=0.8,
+            capsize=1.8,
+            zorder=1,
+        )
+        style_axes(ax1, logx=True, logy=True)
+        ax1.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
+        ax1.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+        ax1.set_title(r"Experimental $P_{\mathrm{th}}(n)$, color-coded by $T$")
+        cbar1 = fig.colorbar(s1, ax=ax1, pad=0.02, fraction=0.05)
+        cbar1.set_label("Temperature (K)")
+
+    fig.suptitle(r"Comparison-ready representation of $P_{\mathrm{th}}(n,T)$", y=1.02)
+    fig.tight_layout(pad=0.7)
+    save_figure(fig, outpath)
+    plt.close(fig)
+    return comparison_df
+
+
 def plot_power_balance(results_df: pd.DataFrame, outpath: Path) -> None:
     x_abs = results_df["absorbed_power_w_cm2"].to_numpy(dtype=float)
     x_abs_err = results_df["absorbed_power_err_w_cm2"].to_numpy(dtype=float)
@@ -1628,6 +1997,8 @@ def main() -> None:
         raise ValueError("PLQY_ETA must be in [0, 1].")
     if PLQY_ETA_SIGMA < 0:
         raise ValueError("PLQY_ETA_SIGMA must be non-negative.")
+    if ACTIVE_LAYER_THICKNESS_NM <= 0:
+        raise ValueError("ACTIVE_LAYER_THICKNESS_NM must be strictly positive.")
     if (FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE <= 0) or (
         FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE > 1
     ):
@@ -1726,11 +2097,20 @@ def main() -> None:
         absorptivity_at_laser_sigma=ABSORPTIVITY_AT_LASER_SIGMA,
         plqy_eta=PLQY_ETA,
         plqy_eta_sigma=PLQY_ETA_SIGMA,
+        active_layer_thickness_nm=ACTIVE_LAYER_THICKNESS_NM,
         eg_ev=EG_EV,
+    )
+    tsai_model_df = load_tsai_model_table(TSAI_MODEL_TABLE_CSV)
+    comparison_df = plot_pth_nt_comparison(
+        results_df=results_df,
+        outpath=out_dir / "pth_nT_comparison.png",
+        theory_df=tsai_model_df,
     )
     results_df.to_csv(out_dir / "fit_results.csv", index=False)
     plot_summary(results_df, out_dir / "parameters_vs_intensity.png")
     plot_power_balance(results_df, out_dir / "thermalized_power_vs_absorbed.png")
+    if comparison_df is not None:
+        comparison_df.to_csv(out_dir / "pth_experiment_vs_tsai.csv", index=False)
 
     print("Done.")
     print(f"Raw spectra plot: {out_dir / 'all_spectra_logscale.png'}")
@@ -1738,6 +2118,9 @@ def main() -> None:
     print(f"Results table:    {out_dir / 'fit_results.csv'}")
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
     print(f"Power figure:     {out_dir / 'thermalized_power_vs_absorbed.png'}")
+    print(f"Pth(n,T) figure:  {out_dir / 'pth_nT_comparison.png'}")
+    if comparison_df is not None:
+        print(f"Tsai compare CSV: {out_dir / 'pth_experiment_vs_tsai.csv'}")
     if AUTO_SELECT_FIT_WINDOW:
         print(
             "Fit window mode:  AUTO per spectrum | "
@@ -1766,8 +2149,16 @@ def main() -> None:
         "Power model:      "
         rf"lambda_laser={LASER_WAVELENGTH_NM:.1f} nm, "
         rf"A_laser={ABSORPTIVITY_AT_LASER:.4f}±{ABSORPTIVITY_AT_LASER_SIGMA:.4f}, "
-        rf"PLQY eta={PLQY_ETA:.4f}±{PLQY_ETA_SIGMA:.4f}"
+        rf"PLQY eta={PLQY_ETA:.4f}±{PLQY_ETA_SIGMA:.4f}, "
+        rf"d={ACTIVE_LAYER_THICKNESS_NM:.1f} nm"
     )
+    if tsai_model_df is None:
+        print("Tsai model table: not provided (set TSAI_MODEL_TABLE_CSV to enable overlay/parity)")
+    else:
+        print(
+            "Tsai model table: "
+            f"{TSAI_MODEL_TABLE_CSV} | points={tsai_model_df.shape[0]}"
+        )
 
 
 if __name__ == "__main__":
