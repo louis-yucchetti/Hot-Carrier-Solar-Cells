@@ -1,217 +1,234 @@
 # Hot Carrier Properties Extraction from GaAs PL Spectra
 
-This project fits experimental photoluminescence (PL) spectra to a simplified form of the Generalized Planck Law (GPL) in the high-energy regime.  
-From each spectrum, the code extracts:
+This project analyzes calibrated GaAs photoluminescence (PL) spectra measured versus excitation intensity.
 
-- carrier temperature `T`
-- quasi-Fermi level splitting `Delta mu` (QFLS)
-- derived quantities under Maxwell-Boltzmann assumptions: `mu_e`, `mu_h`, and carrier density `n`
-
-It also generates figures for quality control and trend analysis versus excitation intensity.
-
-## 1) Scientific objective
-
-You have a set of PL spectra of a GaAs sample measured at different excitation intensities.  
-Each spectrum is a photon-energy distribution and contains information about:
-
-- how hot the carrier population is (`T`)
-- how far the electron-hole system is from equilibrium (`Delta mu`)
-
-The workflow is:
-
-1. visualize all spectra
-2. identify a high-energy domain where the linearized GPL is valid
-3. fit each spectrum in that domain
-4. compare extracted parameters across excitation intensity
-
-## 2) Physics
-
-In steady-state PL, emitted intensity is governed by the generalized Planck law:
-
-`I_PL(E) ~ [2 E^2 / (h^3 c^2)] * A(E) * {exp[(E - Delta mu)/(k_B T)] - 1}^-1`
-
-For sufficiently high energies (`E > Delta mu + k_B T`) and if absorptivity is approximately constant (`A(E) ~= A0`) over the fit window:
-
-`I_PL(E) ~ [2 E^2 / (h^3 c^2)] * A0 * exp[-(E - Delta mu)/(k_B T)]`
-
-Taking the logarithm of a transformed intensity gives a linear relation:
-
-`ln[(h^3 c^2 / 2 E^2) I_PL] = -(E - Delta mu)/(k_B T) + ln(A0)`
-
-So in the correct high-energy domain:
-
-- slope gives temperature (`slope = -1/(k_B T)`)
-- intercept gives `Delta mu` up to the unknown `ln(A0)` offset
-
-Important consequence:
-
-- if `A0` is not independently calibrated, absolute `Delta mu` is an "effective" value
-- temperature extraction from slope is much less sensitive to that offset
-
-### How `mu_e`, `mu_h`, and `n` are obtained from `T` and `Delta mu`
-
-After extracting `T` and `Delta mu` from the PL fit, the code computes carrier statistics using:
-
-- the convention `Delta mu = mu_e + mu_h`
-- electroneutrality: `n_e = n_h`
-- parabolic-band, Maxwell-Boltzmann (MB) expressions
-
-The effective density of states are:
-
-`N_c(T) = 2 * [(m_e^* k_B T)/(2 pi hbar^2)]^(3/2)`
-
-`N_v(T) = 2 * [(m_h^* k_B T)/(2 pi hbar^2)]^(3/2)`
-
-Using the mid-gap energy reference (`E_c = +E_g/2`, `E_v = -E_g/2`), MB carrier densities are:
-
-`n_e = N_c * exp[(mu_e - E_g/2)/(k_B T)]`
-
-`n_h = N_v * exp[(mu_h - E_g/2)/(k_B T)]`
-
-Imposing `n_e = n_h` gives:
-
-`mu_e - mu_h = k_B T * ln(N_c/N_v)`
-
-Combining this with `Delta mu = mu_e + mu_h` yields:
-
-`mu_e = 0.5 * [Delta mu - k_B T ln(N_c/N_v)]`
-
-`mu_h = 0.5 * [Delta mu + k_B T ln(N_c/N_v)]`
-
-Finally, carrier density is:
-
-`n = n_e = n_h = N_c * exp[(mu_e - E_g/2)/(k_B T)]`
-
-Implementation details:
-
-- in code, energies are handled in SI during exponentials and converted to eV for reporting
-- final `n` is reported in `cm^-3` (converted from `m^-3`)
-- this is an MB approximation; for highly degenerate regimes, a full Fermi-Dirac treatment is more accurate
-
-## 3) What the code does end-to-end
+The code:
+- extracts carrier temperature `T` and quasi-Fermi level splitting `Delta_mu` from the high-energy PL tail,
+- propagates uncertainties from fit statistics, fit-range choice, and absorptivity `A0`,
+- computes `mu_e`, `mu_h`, and carrier density `n` (Maxwell-Boltzmann model),
+- computes thermalized/recombination power channels from excitation power using detailed balance.
 
 Main script: `main.py`
 
-1. **Load spectra**
-   - reads `GaAs bulk_PL_avg_circle_4pixs.txt` with `sep=';'` and energy index in eV
-2. **Sort energies**
-   - data is sorted in increasing energy for fitting/plotting consistency
-3. **Plot all raw spectra**
-   - log-scale intensity plot for quick visual inspection
-4. **Select fit window per spectrum (automatic)**
-   - find spectral peak
-   - search windows above `E_peak + offset` in a configurable energy range
-   - test many contiguous candidate windows
-   - keep physically valid linear segments (negative slope, good `R^2`, realistic `T`)
-   - choose best window using a score (linearity + window length + slight high-energy preference)
-5. **Fit linearized GPL in selected window**
-   - linear regression on transformed signal
-   - extract `T`, `Delta mu_eff`, `Delta mu`
-6. **Compute optional derived quantities**
-   - from GaAs effective masses and MB expressions: `mu_e`, `mu_h`, `n`
-7. **Generate diagnostic figure per spectrum**
-   - top panel: raw spectrum + fitted model + selected window
-   - bottom panel: linearized data + regression line
-8. **Aggregate over all intensities**
-   - create trend figure: `T`, `Delta mu`, `mu_e/mu_h`, `n` vs excitation
-9. **Export all artifacts**
-   - CSV table with fitted parameters
-   - PNG and PDF figures (publication-friendly style)
+## 1) Scientific Goal
 
-## 4) Repository structure
+Given multiple PL spectra at different excitation powers, estimate hot-carrier thermodynamic quantities and connect optical excitation to energy dissipation channels:
+- absorbed power,
+- recombination power (radiative + non-radiative),
+- thermalized (cooling) power.
 
-- `main.py`: full analysis pipeline
-- `GaAs bulk_PL_avg_circle_4pixs.txt`: PL dataset (22 spectra)
-- `outputs/`: generated results
-  - `all_spectra_logscale.png/.pdf`
-  - `parameters_vs_intensity.png/.pdf`
-  - `fit_results.csv`
-  - `fits/fit_spectrum_XX.png/.pdf` for each spectrum
+## 2) Physics Model
 
-## 5) Setup and run
+## 2.1 High-energy GPL linearization
 
-## Requirements
+Generalized Planck law (steady state):
 
-- Python 3.10+ (tested in project `.venv`)
-- Packages:
-  - `numpy`
-  - `pandas`
-  - `matplotlib`
+`I_PL(E) ~ [2 E^2 / (h^3 c^2)] * A(E) * {exp[(E - Delta_mu)/(k_B T)] - 1}^-1`
 
-Install (example):
+In the high-energy tail (`E > Delta_mu + k_B T`) and with approximately constant absorptivity in the fit window (`A(E) ~ A0`):
+
+`I_PL(E) ~ [2 E^2 / (h^3 c^2)] * A0 * exp[-(E - Delta_mu)/(k_B T)]`
+
+Define:
+
+`y(E) = ln[(h^3 c^2 / (2 E^2)) I_PL(E)] = m E + b`
+
+Then:
+- `m = -1/(k_B T)` -> `T = -1/(k_B m)`
+- intercept carries `Delta_mu` and `ln(A0)` offset.
+
+The code reports:
+- `qfls_effective_ev`: value obtained directly from intercept (contains unknown `A0` offset),
+- `qfls_ev`: corrected value using configured `ASSUMED_A0`.
+
+## 2.2 Carrier statistics (`mu_e`, `mu_h`, `n`)
+
+Using Maxwell-Boltzmann (MB), charge neutrality, and `Delta_mu = mu_e + mu_h`:
+
+`N_c(T) = 2 * [(m_e* k_B T)/(2 pi hbar^2)]^(3/2)`
+
+`N_v(T) = 2 * [(m_h* k_B T)/(2 pi hbar^2)]^(3/2)`
+
+`mu_e - mu_h = k_B T ln(N_c/N_v)`
+
+`mu_e = 0.5 * [Delta_mu - k_B T ln(N_c/N_v)]`
+
+`mu_h = 0.5 * [Delta_mu + k_B T ln(N_c/N_v)]`
+
+`n = N_c * exp[(mu_e - E_g/2)/(k_B T)]` (converted to `cm^-3` in outputs).
+
+## 2.3 Detailed balance from excitation to thermalized power
+
+Carrier number balance:
+
+`phi_abs = phi_gen = phi_rad + phi_nonrad`
+
+Energy balance:
+
+`P_abs = P_thermalized + P_nonrad + P_rad`
+
+With your channel energies per recombination event:
+
+`P_nonrad = phi_nonrad * (E_g + 3 k_B T)`
+
+`P_rad = phi_rad * (E_g + k_B T)`
+
+So:
+
+`P_rec = P_nonrad + P_rad`
+
+`P_thermalized = P_abs - P_rec`
+
+Absorbed power from excitation:
+
+`P_abs = A(E_laser) * P_exc`
+
+`phi_abs = P_abs / E_laser` with `E_laser = h c / lambda_laser`
+
+Using PLQY `eta = phi_rad/(phi_rad + phi_nonrad)`:
+
+`phi_rad = eta * phi_abs`
+
+`phi_nonrad = (1 - eta) * phi_abs`
+
+This is exactly what `compute_power_balance_table(...)` implements.
+
+## 2.4 If radiative recombination is not negligible
+
+It is handled explicitly through `eta`:
+- `eta = 0` -> purely non-radiative channel,
+- larger `eta` increases radiative share and reduces average recombination energy per event from
+  `E_g + 3k_B T` toward `E_g + k_B T`.
+
+Result: for fixed `P_abs` and `T`, higher `eta` increases `P_thermalized` in this model.
+
+## 3) What the Code Does
+
+Pipeline in `main.py`:
+
+1. Load `GaAs bulk_PL_avg_circle_4pixs.txt`.
+2. Sort by increasing energy.
+3. Plot all raw spectra (`outputs/all_spectra_logscale.*`).
+4. Per spectrum:
+   - build candidate high-energy scan domain,
+   - enumerate contiguous candidate windows,
+   - fit each candidate in linearized space,
+   - keep physically plausible candidates,
+   - select primary window by minimum AICc,
+   - fit selected window and extract `T`, `Delta_mu`, `mu_e`, `mu_h`, `n`,
+   - generate diagnostic plot with:
+     - selected fit window,
+     - full scan domain,
+     - `95% AICc-weight window envelope`.
+5. Aggregate all spectra into `fit_results.csv`.
+6. Compute power-balance quantities (`P_abs`, `P_rec`, `P_thermalized`, fluxes, fractions).
+7. Plot:
+   - parameter trends (`outputs/parameters_vs_intensity.*`)
+   - power balance (`outputs/thermalized_power_vs_absorbed.*`)
+
+## 4) Uncertainty Model
+
+For each extracted parameter, total uncertainty is combined in quadrature:
+
+`sigma_total^2 = sigma_chi2^2 + sigma_range^2 + sigma_A0^2`
+
+Components:
+
+1. `chi2`/fit-statistical term:
+- from linear regression covariance of slope/intercept,
+- propagated analytically to `T`, `Delta_mu`, then via Jacobian to `mu_e`, `mu_h`, `n`.
+
+2. Fit-range term:
+- all plausible windows in scan domain are fitted,
+- each gets AICc weight (`exp(-DeltaAICc/2)`),
+- parameter spread is weighted RMS around selected-window estimate.
+
+3. `A0` term:
+- high-energy absorptivity interval (`A0_HIGH_ENERGY_MIN`, `A0_HIGH_ENERGY_MAX`) defines `ASSUMED_A0` and `A0_SIGMA`,
+- propagated to `Delta_mu` with
+  `d(Delta_mu)/dA0 = -(k_B T)/(e A0)`,
+- then to `mu_e`, `mu_h`, `n`.
+
+Power-balance uncertainty includes derivatives with respect to:
+- `A(E_laser)`,
+- `eta` (PLQY),
+- fitted `T`.
+
+## 5) Inputs That Still Need Real Experimental Values
+
+These are currently placeholders/defaults and should be set from your measurements/calibration:
+
+1. `ABSORPTIVITY_AT_LASER` (current value `0.6`)
+- Meaning: `A(E_laser)` used in `P_abs = A(E_laser) * P_exc`.
+- Must be replaced by calibrated absorptivity at laser wavelength.
+
+2. `ABSORPTIVITY_AT_LASER_SIGMA` (default `0.0`)
+- Uncertainty on `A(E_laser)`.
+
+3. `PLQY_ETA` (default `0.0`)
+- Measured PLQY in your operating conditions.
+- This controls radiative vs non-radiative partition.
+
+4. `PLQY_ETA_SIGMA` (default `0.0`)
+- Uncertainty on PLQY.
+
+Likely known from setup, but verify:
+
+5. `LASER_WAVELENGTH_NM` (currently `532.0`)
+- Should match experiment exactly.
+
+`A0` for high-energy GPL correction is already parameterized from your OptiPV interval:
+- `A0_HIGH_ENERGY_MIN = 0.459`
+- `A0_HIGH_ENERGY_MAX = 0.555`
+
+## 6) Outputs
+
+Generated in `outputs/`:
+
+- `fit_results.csv`:
+  - fitted PL parameters (`T`, `Delta_mu`, `mu_e`, `mu_h`, `n`)
+  - uncertainty components and totals
+  - power-balance columns:
+    - `absorbed_power_w_cm2`
+    - `radiative_power_w_cm2`
+    - `nonradiative_power_w_cm2`
+    - `recombination_power_w_cm2`
+    - `thermalized_power_w_cm2`
+    - fractions and closure diagnostics
+- `all_spectra_logscale.png/.pdf`
+- `parameters_vs_intensity.png/.pdf`
+- `thermalized_power_vs_absorbed.png/.pdf`
+- `fits/fit_spectrum_XX.png/.pdf` diagnostics per spectrum
+
+## 7) Run
+
+Requirements:
+- Python 3.10+
+- `numpy`, `pandas`, `matplotlib`
+
+Example:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install numpy pandas matplotlib
-```
-
-Run:
-
-```powershell
 .\.venv\Scripts\python.exe main.py
 ```
 
-## 6) Key configuration parameters
+## 8) Main Assumptions and Limits
 
-At the top of `main.py`:
+- High-energy approximation for GPL tail is valid in selected window.
+- `A(E)` treated as approximately constant in that high-energy fit window.
+- MB statistics used for `mu_e`, `mu_h`, `n` (not full Fermi-Dirac).
+- Power model uses your specified recombination channel energies:
+  `E_g + 3k_B T` (non-rad), `E_g + k_B T` (rad).
+- Power outputs are per area (`W cm^-2`) because excitation input is per area.
 
-- `AUTO_SELECT_FIT_WINDOW`
-  - `True`: automatic per-spectrum window selection
-  - `False`: use fixed `[FIT_ENERGY_MIN_EV, FIT_ENERGY_MAX_EV]`
-- `WINDOW_SEARCH_MIN_EV`, `WINDOW_SEARCH_MAX_EV`
-  - global search bounds for auto selection
-- `WINDOW_PEAK_OFFSET_EV`
-  - start searching above `E_peak + offset` to target high-energy tail
-- `WINDOW_MIN_POINTS`
-  - minimum points in a candidate window
-- `WINDOW_MIN_R2`
-  - minimum linearity requirement
-- `WINDOW_T_MIN_K`, `WINDOW_T_MAX_K`
-  - physical bounds to reject unphysical fits
-- `ASSUMED_A0`
-  - absorptivity prefactor for converting effective QFLS to absolute QFLS
-- `EG_EV`, `M_E_EFF`, `M_H_EFF`
-  - GaAs parameters used in MB-based `mu_e`, `mu_h`, `n` derivation
-- `SAVE_DPI`, `EXPORT_PDF`
-  - figure quality/output format controls
+## 9) Suggested Next Improvements
 
-## 7) Understanding `fit_results.csv`
-
-Main columns:
-
-- `spectrum_id`: source spectrum column index
-- `intensity_w_cm2`: excitation intensity associated with spectrum
-- `fit_min_ev`, `fit_max_ev`: selected fit window bounds for that spectrum
-- `window_mode`: whether auto/fallback path was used
-- `n_points_fit`: number of data points used in regression
-- `r2`: fit quality in linearized space
-- `temperature_k`: extracted carrier temperature
-- `qfls_effective_ev`: effective `Delta mu` from intercept (includes unknown `A0`)
-- `qfls_ev`: corrected QFLS using `ASSUMED_A0`
-- `mu_e_ev`, `mu_h_ev`, `carrier_density_cm3`: MB-derived quantities
-
-## 8) Quality checks to always perform
-
-Before trusting trends, inspect:
-
-1. each `outputs/fits/fit_spectrum_XX.*` plot
-2. selected windows (`fit_min_ev`, `fit_max_ev`) for consistency across spectra
-3. `r2` values and outliers
-4. physical plausibility of `T` and `Delta mu` trends vs excitation
-
-## 9) Assumptions and limitations
-
-- High-energy approximation is used (`E > Delta mu + k_B T` behavior).
-- `A(E)` is treated as constant in the chosen window.
-- Without independent optical calibration of `A0`, absolute `Delta mu` may be shifted.
-- `mu_e`, `mu_h`, `n` are currently MB-based approximations; at high density/degeneracy, a full Fermi-Dirac treatment is preferable.
-- Results depend on good spectral SNR and robust window selection.
-
-## 10) Suggested next improvements
-
-- replace MB carrier extraction with full Fermi-Dirac integrals + charge neutrality solver
-- propagate fit uncertainty to confidence intervals on `T`, `Delta mu`, and `n`
-- add robust regression options (e.g., weighted fits in low-SNR tails)
-- add batch support for multiple input files and automated report generation
-- create overlay lot using MB vs FD
+1. Replace MB carrier statistics with Fermi-Dirac + neutrality solver for degenerate regimes.
+2. Use measured `A(E)` spectral dependence directly in fit (instead of constant `A0` in window).
+3. Add optional weighted/robust regression for low-SNR high-energy tails.
+4. Introduce Monte Carlo uncertainty propagation for the full power-balance chain.
+5. Add CLI/config-file interface for experiment-specific runs (laser wavelength, PLQY, absorptivity, etc.).
+6. Add automated consistency checks/alerts when `P_thermalized < 0` or when fitted windows become unstable.
