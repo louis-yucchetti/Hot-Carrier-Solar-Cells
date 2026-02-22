@@ -20,15 +20,13 @@ FIT_ENERGY_MIN_EV = 1.55
 FIT_ENERGY_MAX_EV = 1.70
 
 # Auto-window selection parameters
-WINDOW_SEARCH_MIN_EV = 1.50
-WINDOW_SEARCH_MAX_EV = 1.70
+WINDOW_SEARCH_MIN_EV = 1.45
+WINDOW_SEARCH_MAX_EV = 1.75
 WINDOW_PEAK_OFFSET_EV = 0.045
 WINDOW_MIN_POINTS = 18
 WINDOW_MIN_R2 = 0.995
 WINDOW_T_MIN_K = 150.0
 WINDOW_T_MAX_K = 1200.0
-WINDOW_LENGTH_WEIGHT = 2.0e-4
-WINDOW_HIGH_ENERGY_WEIGHT = 2.0e-4
 
 # Fit-range uncertainty from an objective ensemble of plausible windows
 ESTIMATE_FIT_RANGE_UNCERTAINTY = True
@@ -151,8 +149,12 @@ class FitResult:
 
 @dataclass
 class WindowFitSample:
+    idx_start: int
+    idx_end: int
+    n_points: int
     fit_min_ev: float
     fit_max_ev: float
+    r2: float
     aicc: float
     temperature_k: float
     qfls_effective_ev: float
@@ -392,29 +394,61 @@ def _chi2_parameter_uncertainties(
     return out
 
 
-def _fit_range_rms_uncertainty(
+def _build_scan_candidate_mask(
     energy_ev: np.ndarray,
     intensity: np.ndarray,
-    base_fit_mask: np.ndarray,
-    base_parameters: dict[str, float],
-    assumed_a0: float,
-) -> tuple[dict[str, float], int, list[tuple[float, float]]]:
-    out = {key: np.nan for key in base_parameters}
-    if not ESTIMATE_FIT_RANGE_UNCERTAINTY:
-        return out, 0, []
-
-    min_points = max(3, FIT_RANGE_SCAN_MIN_POINTS)
+    min_points: int,
+    prefer_peak_offset: bool,
+) -> tuple[np.ndarray, str]:
     valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
+    if np.count_nonzero(valid) < min_points:
+        return valid, "fallback_insufficient_points"
 
-    candidate = valid & (energy_ev >= WINDOW_SEARCH_MIN_EV) & (energy_ev <= WINDOW_SEARCH_MAX_EV)
-    if np.count_nonzero(candidate) < min_points:
-        candidate = valid & base_fit_mask
+    if prefer_peak_offset:
+        peak_idx = np.argmax(np.where(valid, intensity, -np.inf))
+        peak_ev = float(energy_ev[peak_idx])
+        search_min = max(WINDOW_SEARCH_MIN_EV, peak_ev + WINDOW_PEAK_OFFSET_EV)
+        candidate = (
+            valid
+            & (energy_ev >= search_min)
+            & (energy_ev <= WINDOW_SEARCH_MAX_EV)
+        )
+        mode = "auto_peak_offset"
+        if np.count_nonzero(candidate) >= min_points:
+            return candidate, mode
+
+        candidate = (
+            valid
+            & (energy_ev >= WINDOW_SEARCH_MIN_EV)
+            & (energy_ev <= WINDOW_SEARCH_MAX_EV)
+        )
+        mode = "fallback_search_range_only"
+    else:
+        candidate = (
+            valid
+            & (energy_ev >= WINDOW_SEARCH_MIN_EV)
+            & (energy_ev <= WINDOW_SEARCH_MAX_EV)
+        )
+        mode = "search_range_only"
+
     if np.count_nonzero(candidate) < min_points:
         candidate = valid
+        mode += "|fallback_all_valid"
+    return candidate, mode
 
-    idx_candidate = np.flatnonzero(candidate)
+
+def _enumerate_window_fit_samples(
+    energy_ev: np.ndarray,
+    intensity: np.ndarray,
+    candidate_mask: np.ndarray,
+    min_points: int,
+    min_r2: float,
+    require_physical_bounds: bool,
+    assumed_a0: float,
+) -> list[WindowFitSample]:
+    idx_candidate = np.flatnonzero(candidate_mask)
     if idx_candidate.size < min_points:
-        return out, 0, []
+        return []
 
     samples: list[WindowFitSample] = []
     n_candidate = idx_candidate.size
@@ -424,7 +458,14 @@ def _fit_range_rms_uncertainty(
             idx_window = idx_candidate[i : j + 1]
             x_j = energy_ev[idx_window] * E_CHARGE
             y = linearized_signal(energy_ev[idx_window], intensity[idx_window])
-            slope, intercept, r2, _, ss_res = _compute_linear_fit_and_covariance(x_j, y)
+            slope, intercept, r2, _, ss_res = _compute_linear_fit_and_covariance(
+                x_j, y
+            )
+            if (not np.isfinite(slope)) or (slope >= 0):
+                continue
+            if (not np.isfinite(r2)) or (r2 < min_r2):
+                continue
+
             (
                 temperature_k,
                 qfls_effective_ev,
@@ -433,28 +474,50 @@ def _fit_range_rms_uncertainty(
                 mu_h_ev,
                 n_cm3,
             ) = _compute_parameters_from_line(
-                slope=slope, intercept=intercept, assumed_a0=assumed_a0
+                slope=slope,
+                intercept=intercept,
+                assumed_a0=assumed_a0,
             )
-
-            if FIT_RANGE_SCAN_REQUIRE_PHYSICAL_BOUNDS and (
+            if require_physical_bounds and (
                 (not np.isfinite(temperature_k))
                 or (temperature_k < WINDOW_T_MIN_K)
                 or (temperature_k > WINDOW_T_MAX_K)
-                or (not np.isfinite(r2))
-                or (r2 < FIT_RANGE_SCAN_MIN_R2)
-                or (not np.isfinite(slope))
-                or (slope >= 0)
             ):
                 continue
 
-            aicc = _compute_aicc(ss_res=ss_res, n_points=idx_window.size, n_parameters=2)
+            if not np.all(
+                np.isfinite(
+                    np.array(
+                        [
+                            temperature_k,
+                            qfls_effective_ev,
+                            qfls_ev,
+                            mu_e_ev,
+                            mu_h_ev,
+                            n_cm3,
+                        ],
+                        dtype=float,
+                    )
+                )
+            ):
+                continue
+
+            aicc = _compute_aicc(
+                ss_res=ss_res,
+                n_points=idx_window.size,
+                n_parameters=2,
+            )
             if not np.isfinite(aicc):
                 continue
 
             samples.append(
                 WindowFitSample(
+                    idx_start=int(idx_window[0]),
+                    idx_end=int(idx_window[-1]),
+                    n_points=int(idx_window.size),
                     fit_min_ev=float(energy_ev[idx_window[0]]),
                     fit_max_ev=float(energy_ev[idx_window[-1]]),
+                    r2=float(r2),
                     aicc=float(aicc),
                     temperature_k=float(temperature_k),
                     qfls_effective_ev=float(qfls_effective_ev),
@@ -465,8 +528,62 @@ def _fit_range_rms_uncertainty(
                 )
             )
 
+    return samples
+
+
+def _fit_range_rms_uncertainty(
+    energy_ev: np.ndarray,
+    intensity: np.ndarray,
+    base_fit_mask: np.ndarray,
+    base_parameters: dict[str, float],
+    assumed_a0: float,
+    scan_candidate_mask: np.ndarray | None = None,
+) -> tuple[
+    dict[str, float],
+    int,
+    list[tuple[float, float]],
+    tuple[float, float] | None,
+]:
+    out = {key: np.nan for key in base_parameters}
+    min_points = max(3, FIT_RANGE_SCAN_MIN_POINTS)
+    valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
+
+    if scan_candidate_mask is None:
+        candidate = (
+            valid
+            & (energy_ev >= WINDOW_SEARCH_MIN_EV)
+            & (energy_ev <= WINDOW_SEARCH_MAX_EV)
+        )
+    else:
+        candidate = valid & scan_candidate_mask
+
+    if np.count_nonzero(candidate) < min_points:
+        candidate = valid & base_fit_mask
+    if np.count_nonzero(candidate) < min_points:
+        candidate = valid
+
+    idx_candidate = np.flatnonzero(candidate)
+    if idx_candidate.size == 0:
+        return out, 0, [], None
+
+    scan_bounds = (
+        float(energy_ev[idx_candidate[0]]),
+        float(energy_ev[idx_candidate[-1]]),
+    )
+    if not ESTIMATE_FIT_RANGE_UNCERTAINTY:
+        return out, 0, [], scan_bounds
+
+    samples = _enumerate_window_fit_samples(
+        energy_ev=energy_ev,
+        intensity=intensity,
+        candidate_mask=candidate,
+        min_points=min_points,
+        min_r2=FIT_RANGE_SCAN_MIN_R2,
+        require_physical_bounds=FIT_RANGE_SCAN_REQUIRE_PHYSICAL_BOUNDS,
+        assumed_a0=assumed_a0,
+    )
     if not samples:
-        return out, 0, []
+        return out, 0, [], scan_bounds
 
     aicc = np.array([sample.aicc for sample in samples], dtype=float)
     delta_aicc = aicc - float(np.min(aicc))
@@ -509,7 +626,7 @@ def _fit_range_rms_uncertainty(
             ):
                 break
 
-    return out, len(samples), plot_windows
+    return out, len(samples), plot_windows, scan_bounds
 
 
 def _compute_aicc(ss_res: float, n_points: int, n_parameters: int = 2) -> float:
@@ -591,88 +708,48 @@ def _safe_log_yerr(y: np.ndarray, err: np.ndarray) -> np.ndarray:
 def auto_select_fit_window(
     energy_ev: np.ndarray,
     intensity: np.ndarray,
-) -> tuple[np.ndarray, float, float, str]:
+    assumed_a0: float,
+) -> tuple[np.ndarray, float, float, str, np.ndarray]:
+    min_points = max(3, WINDOW_MIN_POINTS)
+    candidate_mask, window_mode = _build_scan_candidate_mask(
+        energy_ev=energy_ev,
+        intensity=intensity,
+        min_points=min_points,
+        prefer_peak_offset=True,
+    )
     valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
-    if np.count_nonzero(valid) < WINDOW_MIN_POINTS:
-        return valid, np.nan, np.nan, "fallback_insufficient_points"
+    samples = _enumerate_window_fit_samples(
+        energy_ev=energy_ev,
+        intensity=intensity,
+        candidate_mask=candidate_mask,
+        min_points=min_points,
+        min_r2=WINDOW_MIN_R2,
+        require_physical_bounds=True,
+        assumed_a0=assumed_a0,
+    )
 
-    peak_idx = np.argmax(np.where(valid, intensity, -np.inf))
-    peak_ev = float(energy_ev[peak_idx])
-    search_min = max(WINDOW_SEARCH_MIN_EV, peak_ev + WINDOW_PEAK_OFFSET_EV)
-    search_max = WINDOW_SEARCH_MAX_EV
-
-    candidate = valid & (energy_ev >= search_min) & (energy_ev <= search_max)
-    window_mode = "auto_peak_offset"
-
-    if np.count_nonzero(candidate) < WINDOW_MIN_POINTS:
-        candidate = (
-            valid
-            & (energy_ev >= WINDOW_SEARCH_MIN_EV)
-            & (energy_ev <= WINDOW_SEARCH_MAX_EV)
+    if samples:
+        best_sample = min(
+            samples,
+            key=lambda sample: (sample.aicc, -sample.n_points, sample.fit_min_ev),
         )
-        window_mode = "fallback_search_range_only"
-
-    if np.count_nonzero(candidate) < WINDOW_MIN_POINTS:
-        candidate = valid
-        window_mode = "fallback_all_valid"
-
-    idx = np.flatnonzero(candidate)
-    x_j = energy_ev[idx] * E_CHARGE
-    y = linearized_signal(energy_ev[idx], intensity[idx])
-
-    best: dict[str, float | int] | None = None
-    n = idx.size
-
-    for i in range(0, n - WINDOW_MIN_POINTS + 1):
-        for j in range(i + WINDOW_MIN_POINTS - 1, n):
-            xx = x_j[i : j + 1]
-            yy = y[i : j + 1]
-            slope, intercept = np.polyfit(xx, yy, deg=1)
-            if not np.isfinite(slope) or slope >= 0:
-                continue
-
-            yy_fit = slope * xx + intercept
-            ss_res = np.sum((yy - yy_fit) ** 2)
-            ss_tot = np.sum((yy - np.mean(yy)) ** 2)
-            if ss_tot <= 0:
-                continue
-            r2 = 1.0 - ss_res / ss_tot
-            if (not np.isfinite(r2)) or (r2 < WINDOW_MIN_R2):
-                continue
-
-            temperature_k = -1.0 / (K_B * slope)
-            if (
-                (not np.isfinite(temperature_k))
-                or (temperature_k < WINDOW_T_MIN_K)
-                or (temperature_k > WINDOW_T_MAX_K)
-            ):
-                continue
-
-            length = j - i + 1
-            window_start_ev = float(energy_ev[idx[i]])
-            score = (
-                r2
-                + WINDOW_LENGTH_WEIGHT * length
-                + WINDOW_HIGH_ENERGY_WEIGHT * (window_start_ev - float(np.nanmin(energy_ev)))
-            )
-
-            if (best is None) or (score > float(best["score"])):
-                best = {"score": score, "i": i, "j": j}
-
-    if best is None:
-        i = 0
-        j = n - 1
-        window_mode += "|fallback_full_candidate"
+        selected_idx = np.arange(best_sample.idx_start, best_sample.idx_end + 1)
+        window_mode += "|aicc"
     else:
-        i = int(best["i"])
-        j = int(best["j"])
+        selected_idx = np.flatnonzero(candidate_mask)
+        if selected_idx.size == 0:
+            selected_idx = np.flatnonzero(valid)
+        window_mode += "|fallback_full_candidate"
 
-    selected_idx = idx[i : j + 1]
     fit_mask = np.zeros_like(valid, dtype=bool)
     fit_mask[selected_idx] = True
+
+    if selected_idx.size == 0:
+        return fit_mask, np.nan, np.nan, window_mode, candidate_mask
+
     fit_min_ev = float(energy_ev[selected_idx[0]])
     fit_max_ev = float(energy_ev[selected_idx[-1]])
-    return fit_mask, fit_min_ev, fit_max_ev, window_mode
+    return fit_mask, fit_min_ev, fit_max_ev, window_mode, candidate_mask
 
 
 def fit_single_spectrum(
@@ -685,10 +762,23 @@ def fit_single_spectrum(
     fit_max_ev_fixed: float,
     assumed_a0: float,
     a0_sigma: float,
-) -> tuple[FitResult, np.ndarray, list[tuple[float, float]]]:
+) -> tuple[
+    FitResult,
+    np.ndarray,
+    list[tuple[float, float]],
+    tuple[float, float] | None,
+]:
     if auto_select_fit_window_enabled:
-        fit_mask, fit_min_ev, fit_max_ev, window_mode = auto_select_fit_window(
-            energy_ev=energy_ev, intensity=intensity
+        (
+            fit_mask,
+            fit_min_ev,
+            fit_max_ev,
+            window_mode,
+            scan_candidate_mask,
+        ) = auto_select_fit_window(
+            energy_ev=energy_ev,
+            intensity=intensity,
+            assumed_a0=assumed_a0,
         )
     else:
         valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
@@ -697,6 +787,12 @@ def fit_single_spectrum(
         fit_min_ev = fit_min_ev_fixed
         fit_max_ev = fit_max_ev_fixed
         window_mode = "fixed"
+        scan_candidate_mask, _ = _build_scan_candidate_mask(
+            energy_ev=energy_ev,
+            intensity=intensity,
+            min_points=max(3, FIT_RANGE_SCAN_MIN_POINTS),
+            prefer_peak_offset=False,
+        )
 
     if np.count_nonzero(fit_mask) < 3:
         result = FitResult(
@@ -743,7 +839,7 @@ def fit_single_spectrum(
             carrier_density_err_total_cm3=np.nan,
             fit_range_samples=0,
         )
-        return result, np.full_like(intensity, np.nan, dtype=float), []
+        return result, np.full_like(intensity, np.nan, dtype=float), [], None
 
     x_j = energy_ev[fit_mask] * E_CHARGE
     y = linearized_signal(energy_ev[fit_mask], intensity[fit_mask])
@@ -779,12 +875,18 @@ def fit_single_spectrum(
         qfls_ev=qfls_ev,
         assumed_a0=assumed_a0,
     )
-    range_err, n_windows_range, range_windows_ev = _fit_range_rms_uncertainty(
+    (
+        range_err,
+        n_windows_range,
+        range_windows_ev,
+        scan_domain_ev,
+    ) = _fit_range_rms_uncertainty(
         energy_ev=energy_ev,
         intensity=intensity,
         base_fit_mask=fit_mask,
         base_parameters=base_parameters,
         assumed_a0=assumed_a0,
+        scan_candidate_mask=scan_candidate_mask,
     )
     a0_err = _a0_parameter_uncertainties(
         temperature_k=temperature_k,
@@ -877,7 +979,7 @@ def fit_single_spectrum(
         carrier_density_err_total_cm3=float(carrier_density_err_total_cm3),
         fit_range_samples=int(n_windows_range),
     )
-    return result, intensity_model, range_windows_ev
+    return result, intensity_model, range_windows_ev, scan_domain_ev
 
 
 def plot_raw_spectra(
@@ -920,6 +1022,7 @@ def plot_single_fit(
     intensity_model: np.ndarray,
     result: FitResult,
     fit_range_windows_ev: list[tuple[float, float]] | None,
+    scan_domain_ev: tuple[float, float] | None,
     outpath: Path,
 ) -> None:
     fit_min_ev = result.fit_min_ev
@@ -944,6 +1047,14 @@ def plot_single_fit(
         ls="--",
         label="High-energy GPL fit",
     )
+    if scan_domain_ev is not None:
+        ax0.axvspan(
+            scan_domain_ev[0],
+            scan_domain_ev[1],
+            color="#b0bec5",
+            alpha=0.12,
+            label="Full scan domain",
+        )
     ax0.axvspan(fit_min_ev, fit_max_ev, color="0.65", alpha=0.18, label="Selected fit window")
     if fit_range_windows_ev:
         for lo_ev, hi_ev in fit_range_windows_ev:
@@ -958,7 +1069,14 @@ def plot_single_fit(
             )
         lo_env = float(min(w[0] for w in fit_range_windows_ev))
         hi_env = float(max(w[1] for w in fit_range_windows_ev))
-        ax0.axvspan(lo_env, hi_env, color="#64b5f6", alpha=0.07, label="Fit-range scan envelope")
+        coverage_pct = 100.0 * FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE
+        ax0.axvspan(
+            lo_env,
+            hi_env,
+            color="#64b5f6",
+            alpha=0.07,
+            label=f"{coverage_pct:.0f}% AICc-weight window envelope",
+        )
 
     style_axes(ax0, logy=True)
     ax0.set_xlabel(r"Photon energy, $E$ (eV)")
@@ -1014,6 +1132,8 @@ def plot_single_fit(
         label="Points used for fit",
     )
     ax1.plot(x_fit_ev, y_line, color="#d32f2f", lw=1.5, ls="-", label="Linear regression")
+    if scan_domain_ev is not None:
+        ax1.axvspan(scan_domain_ev[0], scan_domain_ev[1], color="#b0bec5", alpha=0.12)
     ax1.axvspan(fit_min_ev, fit_max_ev, color="0.65", alpha=0.18)
     style_axes(ax1)
     ax1.set_xlabel(r"Photon energy, $E$ (eV)")
@@ -1191,7 +1311,12 @@ def main() -> None:
     )
 
     # First spectrum fit (requested starting point)
-    first_result, first_model, first_range_windows = fit_single_spectrum(
+    (
+        first_result,
+        first_model,
+        first_range_windows,
+        first_scan_domain,
+    ) = fit_single_spectrum(
         energy_ev=energy_ev,
         intensity=spectra[:, 0],
         spectrum_id=spectrum_ids[0],
@@ -1208,6 +1333,7 @@ def main() -> None:
         intensity_model=first_model,
         result=first_result,
         fit_range_windows_ev=first_range_windows,
+        scan_domain_ev=first_scan_domain,
         outpath=fit_dir / "fit_spectrum_00.png",
     )
 
@@ -1215,7 +1341,7 @@ def main() -> None:
 
     # Then iterate over all remaining spectra
     for i in range(1, spectra.shape[1]):
-        result, intensity_model, range_windows = fit_single_spectrum(
+        result, intensity_model, range_windows, scan_domain = fit_single_spectrum(
             energy_ev=energy_ev,
             intensity=spectra[:, i],
             spectrum_id=spectrum_ids[i],
@@ -1233,6 +1359,7 @@ def main() -> None:
             intensity_model=intensity_model,
             result=result,
             fit_range_windows_ev=range_windows,
+            scan_domain_ev=scan_domain,
             outpath=fit_dir / f"fit_spectrum_{i:02d}.png",
         )
 
