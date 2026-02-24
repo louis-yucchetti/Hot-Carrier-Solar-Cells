@@ -53,7 +53,6 @@ else:
 
 # Figure export/style
 SAVE_DPI = 450
-EXPORT_PDF = True
 
 # Nominal A0 used to convert Delta_mu_eff into Delta_mu.
 ASSUMED_A0 = 0.5 * (A0_HIGH_ENERGY_MIN + A0_HIGH_ENERGY_MAX)
@@ -410,9 +409,8 @@ def style_axes(ax: plt.Axes, logx: bool = False, logy: bool = False) -> None:
 
 
 def save_figure(fig: plt.Figure, outpath: Path) -> None:
-    fig.savefig(outpath, dpi=SAVE_DPI, bbox_inches="tight")
-    if EXPORT_PDF:
-        fig.savefig(outpath.with_suffix(".pdf"), bbox_inches="tight")
+    png_outpath = outpath.with_suffix(".png")
+    fig.savefig(png_outpath, dpi=SAVE_DPI, bbox_inches="tight")
 
 
 def load_spectra(data_dir: Path, filename: str) -> pd.DataFrame:
@@ -1518,24 +1516,28 @@ def plot_single_fit(
     )
     ax0, ax1 = axes
 
-    ax0.plot(energy_ev, intensity, color="#1f4e79", lw=1.8, label="Experiment")
-    ax0.plot(
-        energy_ev,
-        intensity_model,
-        color="#d32f2f",
-        lw=1.45,
-        ls="--",
-        label="High-energy GPL fit",
-    )
+    scan_fill_color = "#ffe0b2"
+    scan_edge_color = "#ef6c00"
+    selected_fill_color = "#a5d6a7"
+    selected_edge_color = "#2e7d32"
+    envelope_fill_color = "#ce93d8"
+    envelope_edge_color = "#6a1b9a"
+
     if scan_domain_ev is not None:
         ax0.axvspan(
             scan_domain_ev[0],
             scan_domain_ev[1],
-            color="#b0bec5",
-            alpha=0.12,
+            color=scan_fill_color,
+            alpha=0.28,
+            zorder=0,
             label="Full scan domain",
         )
-    ax0.axvspan(fit_min_ev, fit_max_ev, color="0.65", alpha=0.18, label="Selected fit window")
+        ax0.axvline(
+            scan_domain_ev[0], color=scan_edge_color, lw=1.0, ls=":", alpha=0.9, zorder=3
+        )
+        ax0.axvline(
+            scan_domain_ev[1], color=scan_edge_color, lw=1.0, ls=":", alpha=0.9, zorder=3
+        )
     if fit_range_windows_ev:
         for lo_ev, hi_ev in fit_range_windows_ev:
             ax0.hlines(
@@ -1543,9 +1545,10 @@ def plot_single_fit(
                 xmin=lo_ev,
                 xmax=hi_ev,
                 transform=ax0.get_xaxis_transform(),
-                color="#64b5f6",
+                color=envelope_edge_color,
                 lw=1.0,
-                alpha=0.11,
+                alpha=0.28,
+                zorder=1,
             )
         lo_env = float(min(w[0] for w in fit_range_windows_ev))
         hi_env = float(max(w[1] for w in fit_range_windows_ev))
@@ -1553,10 +1556,38 @@ def plot_single_fit(
         ax0.axvspan(
             lo_env,
             hi_env,
-            color="#64b5f6",
-            alpha=0.07,
+            facecolor=envelope_fill_color,
+            alpha=0.16,
+            hatch="///",
+            edgecolor=envelope_edge_color,
+            lw=0.9,
+            zorder=1,
             label=f"{coverage_pct:.0f}% AICc-weight window envelope",
         )
+        ax0.axvline(lo_env, color=envelope_edge_color, lw=0.9, ls="--", alpha=0.8, zorder=3)
+        ax0.axvline(hi_env, color=envelope_edge_color, lw=0.9, ls="--", alpha=0.8, zorder=3)
+    ax0.axvspan(
+        fit_min_ev,
+        fit_max_ev,
+        facecolor=selected_fill_color,
+        alpha=0.36,
+        edgecolor=selected_edge_color,
+        lw=0.95,
+        zorder=2,
+        label="Selected fit window",
+    )
+    ax0.axvline(fit_min_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=4)
+    ax0.axvline(fit_max_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=4)
+    ax0.plot(energy_ev, intensity, color="#1f4e79", lw=1.8, label="Experiment", zorder=5)
+    ax0.plot(
+        energy_ev,
+        intensity_model,
+        color="#d32f2f",
+        lw=1.45,
+        ls="--",
+        label="High-energy GPL fit",
+        zorder=6,
+    )
 
     style_axes(ax0, logy=True)
     ax0.set_xlabel(r"Photon energy, $E$ (eV)")

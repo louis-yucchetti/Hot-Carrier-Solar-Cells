@@ -172,7 +172,7 @@ Pipeline in `main.py`:
 
 1. Load `GaAs bulk_PL_avg_circle_4pixs.txt`.
 2. Sort by increasing energy.
-3. Plot all raw spectra (`outputs/all_spectra_logscale.*`).
+3. Plot all raw spectra (`outputs/all_spectra_logscale.png`).
 4. Per spectrum:
    - build candidate high-energy scan domain,
    - enumerate contiguous candidate windows,
@@ -188,9 +188,9 @@ Pipeline in `main.py`:
 6. Compute power-balance quantities (`P_abs`, `P_rec`, `P_thermalized`, fluxes, fractions) in both
    area units (`W cm^-2`) and volumetric units (`W cm^-3`) using `d=950 nm` (configurable).
 7. Plot:
-   - parameter trends (`outputs/parameters_vs_intensity.*`) with MB vs FD overlays for `mu_e`, `mu_h`, and `n`
-   - power balance (`outputs/thermalized_power_vs_absorbed.*`)
-   - `P_th(n,T)` comparison figure (`outputs/pth_nT_comparison.*`)
+   - parameter trends (`outputs/parameters_vs_intensity.png`) with MB vs FD overlays for `mu_e`, `mu_h`, and `n`
+   - power balance (`outputs/thermalized_power_vs_absorbed.png`)
+   - `P_th(n,T)` comparison figure (`outputs/pth_nT_comparison.png`)
    - if a Tsai table is provided, overlay model contours and produce parity-style comparison.
 
 ## 4) Uncertainty Model
@@ -302,12 +302,12 @@ Generated in `outputs/`:
     - `thermalized_power_w_cm3`
     - `thermalized_power_per_carrier_ev_s`
     - fractions and closure diagnostics
-- `all_spectra_logscale.png/.pdf`
-- `parameters_vs_intensity.png/.pdf`
-- `thermalized_power_vs_absorbed.png/.pdf`
-- `pth_nT_comparison.png/.pdf`
+- `all_spectra_logscale.png`
+- `parameters_vs_intensity.png`
+- `thermalized_power_vs_absorbed.png`
+- `pth_nT_comparison.png`
 - `pth_experiment_vs_tsai.csv` (only if `TSAI_MODEL_TABLE_CSV` is provided)
-- `fits/fit_spectrum_XX.png/.pdf` diagnostics per spectrum
+- `fits/fit_spectrum_XX.png` diagnostics per spectrum
 
 ## 8) Run
 
