@@ -189,7 +189,8 @@ Pipeline in `main.py`:
    area units (`W cm^-2`) and volumetric units (`W cm^-3`) using `d=950 nm` (configurable).
 7. Plot:
    - parameter trends (`outputs/parameters_vs_intensity.png`) with MB vs FD overlays for `mu_e`, `mu_h`, and `n`
-   - power balance (`outputs/thermalized_power_vs_absorbed.png`)
+   - thermalized-power diagnostics (`outputs/thermalized_power_diagnostics.png`) with
+     `P_th` vs `n`, `P_th` vs `T`, `P_th/n` vs `n`, and thermalized energy per pair vs `T`
    - `P_th(n,T)` comparison figure (`outputs/pth_nT_comparison.png`)
    - if a Tsai table is provided, overlay model contours and produce parity-style comparison.
 
@@ -304,7 +305,7 @@ Generated in `outputs/`:
     - fractions and closure diagnostics
 - `all_spectra_logscale.png`
 - `parameters_vs_intensity.png`
-- `thermalized_power_vs_absorbed.png`
+- `thermalized_power_diagnostics.png`
 - `pth_nT_comparison.png`
 - `pth_experiment_vs_tsai.csv` (only if `TSAI_MODEL_TABLE_CSV` is provided)
 - `fits/fit_spectrum_XX.png` diagnostics per spectrum

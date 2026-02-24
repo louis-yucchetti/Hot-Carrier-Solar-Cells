@@ -2107,156 +2107,207 @@ def plot_pth_nt_comparison(
     return comparison_df
 
 
-def plot_power_balance(results_df: pd.DataFrame, outpath: Path) -> None:
-    x_abs = results_df["absorbed_power_w_cm2"].to_numpy(dtype=float)
-    x_abs_err = results_df["absorbed_power_err_w_cm2"].to_numpy(dtype=float)
-    y_th = results_df["thermalized_power_w_cm2"].to_numpy(dtype=float)
-    y_th_err = results_df["thermalized_power_err_w_cm2"].to_numpy(dtype=float)
-    y_rec = results_df["recombination_power_w_cm2"].to_numpy(dtype=float)
-    y_rec_err = results_df["recombination_power_err_w_cm2"].to_numpy(dtype=float)
+def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) -> None:
+    n_cm3 = results_df["carrier_density_cm3"].to_numpy(dtype=float)
+    n_err_cm3 = _sanitize_nonnegative(
+        results_df.get(
+            "carrier_density_err_total_cm3",
+            pd.Series(np.zeros(results_df.shape[0], dtype=float)),
+        ).to_numpy(dtype=float)
+    )
+    temperature_k = results_df["temperature_k"].to_numpy(dtype=float)
+    temperature_err_k = _sanitize_nonnegative(
+        results_df.get(
+            "temperature_err_total_k",
+            pd.Series(np.zeros(results_df.shape[0], dtype=float)),
+        ).to_numpy(dtype=float)
+    )
+    p_th_w_cm3 = results_df["thermalized_power_w_cm3"].to_numpy(dtype=float)
+    p_th_err_w_cm3 = _sanitize_nonnegative(
+        results_df.get(
+            "thermalized_power_err_w_cm3",
+            pd.Series(np.zeros(results_df.shape[0], dtype=float)),
+        ).to_numpy(dtype=float)
+    )
+    p_th_per_carrier_ev_s = results_df["thermalized_power_per_carrier_ev_s"].to_numpy(dtype=float)
+    p_th_per_carrier_err_ev_s = _sanitize_nonnegative(
+        results_df.get(
+            "thermalized_power_per_carrier_err_ev_s",
+            pd.Series(np.zeros(results_df.shape[0], dtype=float)),
+        ).to_numpy(dtype=float)
+    )
+    thermalized_energy_pair_ev = results_df["thermalized_energy_per_pair_ev"].to_numpy(dtype=float)
+    intensity_w_cm2 = results_df["intensity_w_cm2"].to_numpy(dtype=float)
 
     valid = (
-        np.isfinite(x_abs)
-        & np.isfinite(y_th)
-        & np.isfinite(y_rec)
-        & (x_abs > 0)
-        & (y_th > 0)
-        & (y_rec > 0)
+        np.isfinite(n_cm3)
+        & np.isfinite(temperature_k)
+        & np.isfinite(p_th_w_cm3)
+        & np.isfinite(p_th_per_carrier_ev_s)
+        & np.isfinite(thermalized_energy_pair_ev)
+        & (n_cm3 > 0)
+        & (temperature_k > 0)
+        & (p_th_w_cm3 > 0)
+        & (p_th_per_carrier_ev_s > 0)
     )
-    if np.count_nonzero(valid) < 2:
+    if np.count_nonzero(valid) < 3:
         return
 
-    x_plot = x_abs[valid]
-    x_err_plot = x_abs_err[valid]
-    y_th_plot = y_th[valid]
-    y_th_err_plot = y_th_err[valid]
-    y_rec_plot = y_rec[valid]
-    y_rec_err_plot = y_rec_err[valid]
+    n_plot = n_cm3[valid]
+    n_err_plot = n_err_cm3[valid]
+    t_plot = temperature_k[valid]
+    t_err_plot = temperature_err_k[valid]
+    p_th_plot = p_th_w_cm3[valid]
+    p_th_err_plot = p_th_err_w_cm3[valid]
+    p_th_per_carrier_plot = p_th_per_carrier_ev_s[valid]
+    p_th_per_carrier_err_plot = p_th_per_carrier_err_ev_s[valid]
+    thermalized_energy_plot = thermalized_energy_pair_ev[valid]
+    intensity_plot = intensity_w_cm2[valid]
 
-    fig, (ax0, ax1) = plt.subplots(
-        2,
-        1,
-        figsize=(8.2, 7.0),
-        sharex=True,
-        gridspec_kw={"height_ratios": [1.35, 1.0], "hspace": 0.12},
+    fig, axes = plt.subplots(2, 2, figsize=(11.2, 8.3))
+    ax00, ax01 = axes[0]
+    ax10, ax11 = axes[1]
+
+    ax00.errorbar(
+        n_plot,
+        p_th_plot,
+        xerr=n_err_plot,
+        yerr=_safe_log_yerr(y=p_th_plot, err=p_th_err_plot),
+        fmt="none",
+        ecolor="0.6",
+        alpha=0.35,
+        elinewidth=0.8,
+        capsize=1.8,
+        zorder=1,
     )
+    s00 = ax00.scatter(
+        n_plot,
+        p_th_plot,
+        c=t_plot,
+        cmap="viridis",
+        s=56,
+        edgecolors="white",
+        linewidths=0.5,
+        zorder=2,
+    )
+    style_axes(ax00, logx=True, logy=True)
+    ax00.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
+    ax00.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+    ax00.set_title(r"Volumetric thermalized power across carrier states")
+    cbar00 = fig.colorbar(s00, ax=ax00, pad=0.02, fraction=0.052)
+    cbar00.set_label("Temperature (K)")
+    ax00.text(0.03, 0.93, "(a)", transform=ax00.transAxes, fontsize=11, fontweight="semibold")
 
-    ax0.errorbar(
-        x_plot,
-        y_th_plot,
-        xerr=x_err_plot,
-        yerr=_safe_log_yerr(y=y_th_plot, err=y_th_err_plot),
-        fmt="o",
-        ms=4.8,
+    norm_n = LogNorm(vmin=float(np.min(n_plot)), vmax=float(np.max(n_plot)))
+    ax01.errorbar(
+        t_plot,
+        p_th_plot,
+        xerr=t_err_plot,
+        yerr=_safe_log_yerr(y=p_th_plot, err=p_th_err_plot),
+        fmt="none",
+        ecolor="0.6",
+        alpha=0.35,
+        elinewidth=0.8,
+        capsize=1.8,
+        zorder=1,
+    )
+    s01 = ax01.scatter(
+        t_plot,
+        p_th_plot,
+        c=n_plot,
+        cmap="cividis",
+        norm=norm_n,
+        s=56,
+        edgecolors="white",
+        linewidths=0.5,
+        zorder=2,
+    )
+    style_axes(ax01, logy=True)
+    ax01.set_xlabel("Carrier temperature, $T$ (K)")
+    ax01.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+    ax01.set_title(r"Thermalized power versus carrier temperature")
+    cbar01 = fig.colorbar(s01, ax=ax01, pad=0.02, fraction=0.052)
+    cbar01.set_label(r"$n$ (cm$^{-3}$)")
+    ax01.text(0.03, 0.93, "(b)", transform=ax01.transAxes, fontsize=11, fontweight="semibold")
+
+    ax10.errorbar(
+        n_plot,
+        p_th_per_carrier_plot,
+        xerr=n_err_plot,
+        yerr=_safe_log_yerr(y=p_th_per_carrier_plot, err=p_th_per_carrier_err_plot),
+        fmt="none",
+        ecolor="0.6",
+        alpha=0.35,
+        elinewidth=0.8,
+        capsize=1.8,
+        zorder=1,
+    )
+    s10 = ax10.scatter(
+        n_plot,
+        p_th_per_carrier_plot,
+        c=t_plot,
+        cmap="plasma",
+        s=56,
+        edgecolors="white",
+        linewidths=0.5,
+        zorder=2,
+    )
+    style_axes(ax10, logx=True, logy=True)
+    ax10.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
+    ax10.set_ylabel(r"$P_{\mathrm{th}}/n$ (eV s$^{-1}$ carrier$^{-1}$)")
+    ax10.set_title(r"Per-carrier cooling rate versus carrier density")
+    cbar10 = fig.colorbar(s10, ax=ax10, pad=0.02, fraction=0.052)
+    cbar10.set_label("Temperature (K)")
+    ax10.text(0.03, 0.93, "(c)", transform=ax10.transAxes, fontsize=11, fontweight="semibold")
+
+    intensity_norm = LogNorm(vmin=float(np.min(intensity_plot)), vmax=float(np.max(intensity_plot)))
+    ax11.errorbar(
+        t_plot,
+        thermalized_energy_plot,
+        xerr=t_err_plot,
+        fmt="none",
+        ecolor="0.6",
+        alpha=0.35,
+        elinewidth=0.8,
+        capsize=1.8,
+        zorder=1,
+    )
+    s11 = ax11.scatter(
+        t_plot,
+        thermalized_energy_plot,
+        c=intensity_plot,
+        cmap="magma",
+        norm=intensity_norm,
+        s=56,
+        edgecolors="white",
+        linewidths=0.5,
+        zorder=2,
+    )
+    e_laser_ev = float(results_df["laser_photon_energy_ev"].to_numpy(dtype=float)[0])
+    eta = float(results_df["plqy_eta"].to_numpy(dtype=float)[0])
+    t_line = np.linspace(float(np.min(t_plot)) * 0.98, float(np.max(t_plot)) * 1.02, 160)
+    delta_e_line = e_laser_ev - (
+        EG_EV + (3.0 - 2.0 * eta) * (K_B / E_CHARGE) * t_line
+    )
+    ax11.plot(
+        t_line,
+        delta_e_line,
+        "--",
         lw=1.2,
-        capsize=2.3,
-        color="#1565c0",
-        label=r"$P_{\mathrm{thermalized}}$",
+        color="0.2",
+        label=r"$E_{laser}-(E_g+(3-2\eta)k_BT)$",
     )
-    ax0.errorbar(
-        x_plot,
-        y_rec_plot,
-        xerr=x_err_plot,
-        yerr=_safe_log_yerr(y=y_rec_plot, err=y_rec_err_plot),
-        fmt="s",
-        ms=4.0,
-        lw=1.0,
-        capsize=2.0,
-        color="#ef6c00",
-        label=r"$P_{\mathrm{recomb}}$",
-    )
+    style_axes(ax11)
+    ax11.set_xlabel("Carrier temperature, $T$ (K)")
+    ax11.set_ylabel(r"Thermalized energy per pair (eV)")
+    ax11.set_title(r"Excess energy dissipated per absorbed carrier pair")
+    ax11.legend(loc="best", fontsize=8.5)
+    cbar11 = fig.colorbar(s11, ax=ax11, pad=0.02, fraction=0.052)
+    cbar11.set_label(r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+    ax11.text(0.03, 0.93, "(d)", transform=ax11.transAxes, fontsize=11, fontweight="semibold")
 
-    x_line = np.logspace(
-        np.log10(float(np.min(x_plot)) * 0.95),
-        np.log10(float(np.max(x_plot)) * 1.05),
-        200,
-    )
-    ax0.plot(
-        x_line,
-        x_line,
-        ls="--",
-        lw=1.2,
-        color="0.25",
-        label=r"$P_{\mathrm{abs}}$ reference",
-    )
-
-    style_axes(ax0, logx=True, logy=True)
-    ax0.set_ylabel(r"Power density (W cm$^{-2}$)")
-    ax0.set_title("Power balance from excitation to thermalized and recombination channels")
-    ax0.legend(loc="best", fontsize=9)
-    ax0.text(
-        0.985,
-        0.04,
-        (
-            rf"$\lambda_{{laser}}$={LASER_WAVELENGTH_NM:.0f} nm, "
-            rf"$A(E_{{laser}})$={ABSORPTIVITY_AT_LASER:.3f}, "
-            rf"$\eta$={PLQY_ETA:.3f}"
-        ),
-        transform=ax0.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=9,
-        bbox={
-            "facecolor": "white",
-            "edgecolor": "0.3",
-            "boxstyle": "square,pad=0.22",
-            "alpha": 0.93,
-        },
-    )
-
-    frac_th = results_df["thermalized_fraction"].to_numpy(dtype=float)
-    frac_rec = results_df["recombination_fraction"].to_numpy(dtype=float)
-    frac_rad = results_df["radiative_fraction"].to_numpy(dtype=float)
-    frac_nonrad = results_df["nonradiative_fraction"].to_numpy(dtype=float)
-    valid_frac = np.isfinite(x_abs) & (x_abs > 0)
-
-    ax1.plot(
-        x_abs[valid_frac],
-        frac_th[valid_frac],
-        "o-",
-        ms=4.0,
-        color="#1565c0",
-        label=r"$P_{\mathrm{thermalized}}/P_{\mathrm{abs}}$",
-    )
-    ax1.plot(
-        x_abs[valid_frac],
-        frac_rec[valid_frac],
-        "s-",
-        ms=3.7,
-        color="#ef6c00",
-        label=r"$P_{\mathrm{recomb}}/P_{\mathrm{abs}}$",
-    )
-    ax1.plot(
-        x_abs[valid_frac],
-        frac_rad[valid_frac],
-        "^-",
-        ms=3.4,
-        color="#6a1b9a",
-        alpha=0.85,
-        label=r"$P_{\mathrm{rad}}/P_{\mathrm{abs}}$",
-    )
-    ax1.plot(
-        x_abs[valid_frac],
-        frac_nonrad[valid_frac],
-        "v-",
-        ms=3.4,
-        color="#2e7d32",
-        alpha=0.85,
-        label=r"$P_{\mathrm{nonrad}}/P_{\mathrm{abs}}$",
-    )
-    ax1.axhline(1.0, color="0.25", lw=1.0, ls="--")
-    style_axes(ax1, logx=True)
-    ax1.set_xlabel(r"Absorbed power density, $P_{\mathrm{abs}}$ (W cm$^{-2}$)")
-    ax1.set_ylabel("Fraction")
-    frac_th_finite = frac_th[valid_frac & np.isfinite(frac_th)]
-    if frac_th_finite.size > 0:
-        y_bottom = min(-0.05, float(np.min(frac_th_finite)) - 0.05)
-    else:
-        y_bottom = -0.05
-    ax1.set_ylim(bottom=y_bottom, top=1.25)
-    ax1.legend(loc="best", fontsize=8.5)
-
-    fig.subplots_adjust(left=0.12, right=0.97, bottom=0.08, top=0.95, hspace=0.16)
+    fig.suptitle(r"Thermalized-power diagnostics in carrier-state space", y=1.01)
+    fig.tight_layout(pad=0.8)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -2336,7 +2387,7 @@ def _print_run_summary(
     print(f"Spectrum fits:    {fit_dir}")
     print(f"Results table:    {out_dir / 'fit_results.csv'}")
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
-    print(f"Power figure:     {out_dir / 'thermalized_power_vs_absorbed.png'}")
+    print(f"Power figure:     {out_dir / 'thermalized_power_diagnostics.png'}")
     print(f"Pth(n,T) figure:  {out_dir / 'pth_nT_comparison.png'}")
     if comparison_df is not None:
         print(f"Tsai compare CSV: {out_dir / 'pth_experiment_vs_tsai.csv'}")
@@ -2441,7 +2492,10 @@ def main() -> None:
     )
     results_df.to_csv(out_dir / "fit_results.csv", index=False)
     plot_summary(results_df, out_dir / "parameters_vs_intensity.png")
-    plot_power_balance(results_df, out_dir / "thermalized_power_vs_absorbed.png")
+    legacy_power_plot = out_dir / "thermalized_power_vs_absorbed.png"
+    if legacy_power_plot.exists():
+        legacy_power_plot.unlink()
+    plot_thermalized_power_diagnostics(results_df, out_dir / "thermalized_power_diagnostics.png")
     if comparison_df is not None:
         comparison_df.to_csv(out_dir / "pth_experiment_vs_tsai.csv", index=False)
     _print_run_summary(
