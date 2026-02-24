@@ -5,7 +5,7 @@ This project analyzes calibrated GaAs photoluminescence (PL) spectra measured ve
 The code:
 - extracts carrier temperature `T` and quasi-Fermi level splitting `Delta_mu` from the high-energy PL tail,
 - propagates uncertainties from fit statistics, fit-range choice, and absorptivity `A0`,
-- computes `mu_e`, `mu_h`, and carrier density `n` (Maxwell-Boltzmann model),
+- computes `mu_e`, `mu_h`, and carrier density `n` using both Maxwell-Boltzmann (MB) and Fermi-Dirac (FD) carrier statistics,
 - computes thermalized/recombination power channels from excitation power using detailed balance,
 - generates comparison-ready `P_th(n,T)` plots and optional experiment-vs-Tsai overlays.
 
@@ -44,11 +44,18 @@ The code reports:
 
 ## 2.2 Carrier statistics (`mu_e`, `mu_h`, `n`)
 
-Using Maxwell-Boltzmann (MB), charge neutrality, and `Delta_mu = mu_e + mu_h`:
+`T` and `Delta_mu` come from the GPL tail fit (Section 2.1).  
+Carrier statistics are then applied as a second step, using the same `T` and `Delta_mu`.
+
+Shared effective density-of-states terms:
 
 `N_c(T) = 2 * [(m_e* k_B T)/(2 pi hbar^2)]^(3/2)`
 
 `N_v(T) = 2 * [(m_h* k_B T)/(2 pi hbar^2)]^(3/2)`
+
+### MB (analytic)
+
+With charge neutrality (`n=p`) and `Delta_mu = mu_e + mu_h`:
 
 `mu_e - mu_h = k_B T ln(N_c/N_v)`
 
@@ -56,7 +63,43 @@ Using Maxwell-Boltzmann (MB), charge neutrality, and `Delta_mu = mu_e + mu_h`:
 
 `mu_h = 0.5 * [Delta_mu + k_B T ln(N_c/N_v)]`
 
-`n = N_c * exp[(mu_e - E_g/2)/(k_B T)]` (converted to `cm^-3` in outputs).
+`n = N_c * exp[(mu_e - E_g/2)/(k_B T)]`
+
+### FD (numerical)
+
+For a 3D parabolic band:
+
+`n = N_c * F_{1/2}(eta_e)`
+
+`p = N_v * F_{1/2}(eta_h)`
+
+`eta_e = (mu_e - E_g/2)/(k_B T)`
+
+`eta_h = (mu_h - E_g/2)/(k_B T)`
+
+`Delta_mu = mu_e + mu_h`
+
+The code solves neutrality:
+
+`N_c * F_{1/2}(eta_e) = N_v * F_{1/2}(eta_h)`
+
+with
+
+`eta_h = (Delta_mu - E_g)/(k_B T) - eta_e`
+
+by bisection, then reconstructs:
+
+`mu_e = E_g/2 + k_B T * eta_e`
+
+`mu_h = E_g/2 + k_B T * eta_h`
+
+`n = N_c * F_{1/2}(eta_e)`
+
+where `F_{1/2}` is the complete Fermi-Dirac integral.
+
+Important interpretation:
+- MB and FD differ only in the carrier-statistics back-calculation (`mu_e`, `mu_h`, `n`).
+- `T` and `Delta_mu` are unchanged, because they come from the same GPL tail fit.
 
 ## 2.3 Detailed balance from excitation to thermalized power
 
@@ -117,7 +160,7 @@ The comparison target is:
 `P_th(n,T)` (thermalized/cooling power density as a function of carrier density and carrier temperature).
 
 From CWPL, each excitation condition gives one experimental triplet:
-- `n` from GPL + MB extraction,
+- `n` from GPL + carrier-statistics back-calculation (`carrier_density_cm3` for MB in the current `P_th(n,T)` plot),
 - `T` from GPL slope,
 - `P_th` from the detailed-balance power model above (reported in `W cm^-3`).
 
@@ -136,7 +179,7 @@ Pipeline in `main.py`:
    - fit each candidate in linearized space,
    - keep physically plausible candidates,
    - select primary window by minimum AICc,
-   - fit selected window and extract `T`, `Delta_mu`, `mu_e`, `mu_h`, `n`,
+   - fit selected window and extract `T`, `Delta_mu`, then compute (`mu_e`, `mu_h`, `n`) with MB and FD,
    - generate diagnostic plot with:
      - selected fit window,
      - full scan domain,
@@ -145,7 +188,7 @@ Pipeline in `main.py`:
 6. Compute power-balance quantities (`P_abs`, `P_rec`, `P_thermalized`, fluxes, fractions) in both
    area units (`W cm^-2`) and volumetric units (`W cm^-3`) using `d=950 nm` (configurable).
 7. Plot:
-   - parameter trends (`outputs/parameters_vs_intensity.*`)
+   - parameter trends (`outputs/parameters_vs_intensity.*`) with MB vs FD overlays for `mu_e`, `mu_h`, and `n`
    - power balance (`outputs/thermalized_power_vs_absorbed.*`)
    - `P_th(n,T)` comparison figure (`outputs/pth_nT_comparison.*`)
    - if a Tsai table is provided, overlay model contours and produce parity-style comparison.
@@ -160,7 +203,7 @@ Components:
 
 1. `chi2`/fit-statistical term:
 - from linear regression covariance of slope/intercept,
-- propagated analytically to `T`, `Delta_mu`, then via Jacobian to `mu_e`, `mu_h`, `n`.
+- propagated analytically to `T`, `Delta_mu`, then via Jacobian to MB-derived `mu_e`, `mu_h`, `n`.
 
 2. Fit-range term:
 - all plausible windows in scan domain are fitted,
@@ -171,7 +214,11 @@ Components:
 - high-energy absorptivity interval (`A0_HIGH_ENERGY_MIN`, `A0_HIGH_ENERGY_MAX`) defines `ASSUMED_A0` and `A0_SIGMA`,
 - propagated to `Delta_mu` with
   `d(Delta_mu)/dA0 = -(k_B T)/(e A0)`,
-- then to `mu_e`, `mu_h`, `n`.
+- then to MB-derived `mu_e`, `mu_h`, `n`.
+
+Current implementation note:
+- FD quantities are reported as nominal values from the same fitted `T` and `Delta_mu`.
+- Their uncertainty propagation is not yet implemented separately.
 
 Power-balance uncertainty includes derivatives with respect to:
 - `A(E_laser)`,
@@ -242,7 +289,9 @@ Interpretation strategy:
 Generated in `outputs/`:
 
 - `fit_results.csv`:
-  - fitted PL parameters (`T`, `Delta_mu`, `mu_e`, `mu_h`, `n`)
+  - fitted PL parameters (`T`, `Delta_mu`)
+  - MB carrier outputs: `mu_e_ev`, `mu_h_ev`, `carrier_density_cm3`
+  - FD carrier outputs: `mu_e_fd_ev`, `mu_h_fd_ev`, `carrier_density_fd_cm3`
   - uncertainty components and totals
   - power-balance columns:
     - `absorbed_power_w_cm2`
@@ -279,7 +328,8 @@ pip install numpy pandas matplotlib
 
 - High-energy approximation for GPL tail is valid in selected window.
 - `A(E)` treated as approximately constant in that high-energy fit window.
-- MB statistics used for `mu_e`, `mu_h`, `n` (not full Fermi-Dirac).
+- MB and FD are both evaluated with a parabolic-band DOS and fixed effective masses (`M_E_EFF`, `M_H_EFF`).
+- FD currently improves degeneracy handling for carrier statistics, but uncertainty propagation is MB-based.
 - Power model uses your specified recombination channel energies:
   `E_g + 3k_B T` (non-rad), `E_g + k_B T` (rad).
 - Power is reported both per area (`W cm^-2`) and per volume (`W cm^-3`) using a uniform active thickness.
@@ -287,7 +337,7 @@ pip install numpy pandas matplotlib
 
 ## 10) Suggested Next Improvements
 
-1. Replace MB carrier statistics with Fermi-Dirac + neutrality solver for degenerate regimes.
+1. Propagate uncertainties for FD-derived `mu_e`, `mu_h`, and `n` (parallel to MB uncertainty terms).
 2. Use measured `A(E)` spectral dependence directly in fit (instead of constant `A0` in window).
 3. Add optional weighted/robust regression for low-SNR high-energy tails.
 4. Replace nearest-point Tsai matching by smooth interpolation on `(log10 n, T)` plus uncertainty on model predictions.

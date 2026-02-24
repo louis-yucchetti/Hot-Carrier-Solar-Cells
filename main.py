@@ -70,10 +70,16 @@ ACTIVE_LAYER_THICKNESS_NM = 950.0
 # CSV columns required: n_cm3, temperature_k, p_th_w_cm3
 TSAI_MODEL_TABLE_CSV = ""
 
-# GaAs parameters for optional Maxwell-Boltzmann carrier estimates
+# GaAs parameters for carrier-statistics post-processing (MB and FD)
 EG_EV = 1.424
 M_E_EFF = 0.067
 M_H_EFF = 0.50
+
+# Fermi-Dirac solver controls (3D parabolic-band model)
+FD_BISECTION_ETA_BOUND = 40.0
+FD_BISECTION_MAX_ITER = 160
+FD_BISECTION_TOL = 1e-8
+FD_F12_MIDPOINTS = 1200
 
 # Excitation intensities (W/cm^2), one per spectrum column
 EXCITATION_INTENSITY_W_CM2 = np.array(
@@ -133,6 +139,9 @@ class FitResult:
     mu_e_ev: float
     mu_h_ev: float
     carrier_density_cm3: float
+    mu_e_fd_ev: float
+    mu_h_fd_ev: float
+    carrier_density_fd_cm3: float
     temperature_err_chi2_k: float
     temperature_err_range_k: float
     temperature_err_a0_k: float
@@ -246,6 +255,19 @@ def linearized_signal(energy_ev: np.ndarray, intensity: np.ndarray) -> np.ndarra
     return np.log((H**3 * C**2 / (2.0 * energy_j**2)) * intensity)
 
 
+def _effective_density_of_states(
+    temperature_k: float,
+    m_e_eff: float = M_E_EFF,
+    m_h_eff: float = M_H_EFF,
+) -> tuple[float, float]:
+    if (not np.isfinite(temperature_k)) or temperature_k <= 0:
+        return np.nan, np.nan
+
+    nc = 2.0 * ((m_e_eff * M0 * K_B * temperature_k) / (2.0 * np.pi * HBAR**2)) ** 1.5
+    nv = 2.0 * ((m_h_eff * M0 * K_B * temperature_k) / (2.0 * np.pi * HBAR**2)) ** 1.5
+    return float(nc), float(nv)
+
+
 def compute_mu_and_density_mb(
     temperature_k: float,
     qfls_ev: float,
@@ -253,8 +275,13 @@ def compute_mu_and_density_mb(
     m_e_eff: float = M_E_EFF,
     m_h_eff: float = M_H_EFF,
 ) -> tuple[float, float, float]:
-    nc = 2.0 * ((m_e_eff * M0 * K_B * temperature_k) / (2.0 * np.pi * HBAR**2)) ** 1.5
-    nv = 2.0 * ((m_h_eff * M0 * K_B * temperature_k) / (2.0 * np.pi * HBAR**2)) ** 1.5
+    nc, nv = _effective_density_of_states(
+        temperature_k=temperature_k,
+        m_e_eff=m_e_eff,
+        m_h_eff=m_h_eff,
+    )
+    if (not np.isfinite(nc)) or (not np.isfinite(nv)) or (nc <= 0) or (nv <= 0):
+        return np.nan, np.nan, np.nan
 
     delta_mass_term_ev = (K_B * temperature_k / E_CHARGE) * np.log(nc / nv)
     mu_e_ev = 0.5 * (qfls_ev - delta_mass_term_ev)
@@ -263,6 +290,102 @@ def compute_mu_and_density_mb(
     n_m3 = nc * np.exp(((mu_e_ev - eg_ev / 2.0) * E_CHARGE) / (K_B * temperature_k))
     n_cm3 = n_m3 / 1e6
     return mu_e_ev, mu_h_ev, n_cm3
+
+
+def _fermi_dirac_half(eta: float) -> float:
+    """
+    Complete Fermi-Dirac integral F_{1/2}(eta):
+      F_{1/2}(eta) = (2/sqrt(pi)) * integral_0^inf sqrt(eps)/(1 + exp(eps-eta)) d eps
+    """
+    if not np.isfinite(eta):
+        return np.nan
+
+    eta = float(eta)
+    if eta <= -8.0:
+        return float(np.exp(eta))
+
+    if eta >= 12.0:
+        leading = (4.0 / (3.0 * np.sqrt(np.pi))) * eta**1.5
+        correction = (np.pi**2 / (6.0 * np.sqrt(np.pi))) * eta**-0.5
+        return float(leading + correction)
+
+    x_max = max(40.0, eta + 40.0)
+    x = np.linspace(0.0, x_max, FD_F12_MIDPOINTS, dtype=float)
+    u = x - eta
+    occupation = np.where(u > 40.0, np.exp(-u), 1.0 / (1.0 + np.exp(u)))
+    integrand = np.sqrt(x) * occupation
+    return float((2.0 / np.sqrt(np.pi)) * np.trapezoid(integrand, x))
+
+
+def compute_mu_and_density_fd(
+    temperature_k: float,
+    qfls_ev: float,
+    eg_ev: float = EG_EV,
+    m_e_eff: float = M_E_EFF,
+    m_h_eff: float = M_H_EFF,
+) -> tuple[float, float, float]:
+    if (
+        (not np.isfinite(temperature_k))
+        or (temperature_k <= 0)
+        or (not np.isfinite(qfls_ev))
+    ):
+        return np.nan, np.nan, np.nan
+
+    nc, nv = _effective_density_of_states(
+        temperature_k=temperature_k,
+        m_e_eff=m_e_eff,
+        m_h_eff=m_h_eff,
+    )
+    if (not np.isfinite(nc)) or (not np.isfinite(nv)) or (nc <= 0) or (nv <= 0):
+        return np.nan, np.nan, np.nan
+
+    kbt_ev = (K_B * temperature_k) / E_CHARGE
+    reduced_qfls = (qfls_ev - eg_ev) / kbt_ev
+
+    def neutrality(eta_e: float) -> float:
+        eta_h = reduced_qfls - eta_e
+        return (nc * _fermi_dirac_half(eta_e)) - (nv * _fermi_dirac_half(eta_h))
+
+    eta_lo = min(-FD_BISECTION_ETA_BOUND, reduced_qfls - FD_BISECTION_ETA_BOUND)
+    eta_hi = max(FD_BISECTION_ETA_BOUND, reduced_qfls + FD_BISECTION_ETA_BOUND)
+    f_lo = neutrality(eta_lo)
+    f_hi = neutrality(eta_hi)
+    if (not np.isfinite(f_lo)) or (not np.isfinite(f_hi)):
+        return np.nan, np.nan, np.nan
+
+    while f_lo * f_hi > 0:
+        eta_lo -= FD_BISECTION_ETA_BOUND
+        eta_hi += FD_BISECTION_ETA_BOUND
+        f_lo = neutrality(eta_lo)
+        f_hi = neutrality(eta_hi)
+        if (not np.isfinite(f_lo)) or (not np.isfinite(f_hi)):
+            return np.nan, np.nan, np.nan
+        if max(abs(eta_lo), abs(eta_hi)) > 8.0 * FD_BISECTION_ETA_BOUND:
+            return np.nan, np.nan, np.nan
+
+    eta_mid = 0.5 * (eta_lo + eta_hi)
+    for _ in range(FD_BISECTION_MAX_ITER):
+        eta_mid = 0.5 * (eta_lo + eta_hi)
+        f_mid = neutrality(eta_mid)
+        if not np.isfinite(f_mid):
+            return np.nan, np.nan, np.nan
+
+        if abs(eta_hi - eta_lo) < FD_BISECTION_TOL:
+            break
+        if f_lo * f_mid <= 0:
+            eta_hi = eta_mid
+            f_hi = f_mid
+        else:
+            eta_lo = eta_mid
+            f_lo = f_mid
+
+    eta_e = float(eta_mid)
+    eta_h = float(reduced_qfls - eta_e)
+    mu_e_ev = eg_ev / 2.0 + kbt_ev * eta_e
+    mu_h_ev = eg_ev / 2.0 + kbt_ev * eta_h
+    n_m3 = nc * _fermi_dirac_half(eta_e)
+    n_cm3 = n_m3 / 1e6
+    return float(mu_e_ev), float(mu_h_ev), float(n_cm3)
 
 
 def _compute_linear_fit_and_covariance(
@@ -1077,6 +1200,9 @@ def fit_single_spectrum(
             mu_e_ev=np.nan,
             mu_h_ev=np.nan,
             carrier_density_cm3=np.nan,
+            mu_e_fd_ev=np.nan,
+            mu_h_fd_ev=np.nan,
+            carrier_density_fd_cm3=np.nan,
             temperature_err_chi2_k=np.nan,
             temperature_err_range_k=np.nan,
             temperature_err_a0_k=np.nan,
@@ -1121,6 +1247,10 @@ def fit_single_spectrum(
         slope=slope,
         intercept=intercept,
         assumed_a0=assumed_a0,
+    )
+    mu_e_fd_ev, mu_h_fd_ev, n_fd_cm3 = compute_mu_and_density_fd(
+        temperature_k=temperature_k,
+        qfls_ev=qfls_ev,
     )
 
     base_parameters = {
@@ -1217,6 +1347,9 @@ def fit_single_spectrum(
         mu_e_ev=float(mu_e_ev),
         mu_h_ev=float(mu_h_ev),
         carrier_density_cm3=float(n_cm3),
+        mu_e_fd_ev=float(mu_e_fd_ev),
+        mu_h_fd_ev=float(mu_h_fd_ev),
+        carrier_density_fd_cm3=float(n_fd_cm3),
         temperature_err_chi2_k=float(chi2_err["temperature_k"]),
         temperature_err_range_k=float(range_err["temperature_k"]),
         temperature_err_a0_k=float(a0_err["temperature_k"]),
@@ -1479,7 +1612,7 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         capsize=2.5,
         elinewidth=1.0,
         color="#ef6c00",
-        label=r"$\mu_e$",
+        label=r"$\mu_e$ (MB)",
     )
     ax10.errorbar(
         x,
@@ -1491,7 +1624,27 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         capsize=2.5,
         elinewidth=1.0,
         color="#2e7d32",
-        label=r"$\mu_h$",
+        label=r"$\mu_h$ (MB)",
+    )
+    ax10.plot(
+        x,
+        results_df["mu_e_fd_ev"],
+        "s--",
+        lw=1.2,
+        ms=3.9,
+        color="#bf360c",
+        alpha=0.9,
+        label=r"$\mu_e$ (FD)",
+    )
+    ax10.plot(
+        x,
+        results_df["mu_h_fd_ev"],
+        "s--",
+        lw=1.2,
+        ms=3.9,
+        color="#1b5e20",
+        alpha=0.9,
+        label=r"$\mu_h$ (FD)",
     )
     style_axes(ax10, logx=True)
     ax10.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
@@ -1511,10 +1664,23 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         capsize=2.5,
         elinewidth=1.0,
         color="#00838f",
+        label=r"$n$ (MB)",
+    )
+    n_fd_vals = results_df["carrier_density_fd_cm3"].to_numpy(dtype=float)
+    ax11.plot(
+        x,
+        n_fd_vals,
+        "s--",
+        lw=1.2,
+        ms=4.0,
+        color="#004d40",
+        alpha=0.9,
+        label=r"$n$ (FD)",
     )
     style_axes(ax11, logx=True, logy=True)
     ax11.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
     ax11.set_ylabel(r"Carrier density, $n$ (cm$^{-3}$)")
+    ax11.legend(loc="best", fontsize=9)
     ax11.text(0.03, 0.93, "(d)", transform=ax11.transAxes, fontsize=11, fontweight="semibold")
 
     if np.isfinite(x_min_plot) and np.isfinite(x_max_plot) and (x_max_plot > x_min_plot):
