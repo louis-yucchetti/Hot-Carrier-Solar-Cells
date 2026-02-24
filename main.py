@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -184,6 +184,176 @@ class WindowFitSample:
     mu_e_ev: float
     mu_h_ev: float
     carrier_density_cm3: float
+
+
+FIT_PARAMETER_KEYS = (
+    "temperature_k",
+    "qfls_effective_ev",
+    "qfls_ev",
+    "mu_e_ev",
+    "mu_h_ev",
+    "carrier_density_cm3",
+)
+
+FIT_RESULT_ERROR_FIELDS = {
+    "temperature_k": (
+        "temperature_err_chi2_k",
+        "temperature_err_range_k",
+        "temperature_err_a0_k",
+        "temperature_err_total_k",
+    ),
+    "qfls_effective_ev": (
+        "qfls_effective_err_chi2_ev",
+        "qfls_effective_err_range_ev",
+        "qfls_effective_err_a0_ev",
+        "qfls_effective_err_total_ev",
+    ),
+    "qfls_ev": (
+        "qfls_err_chi2_ev",
+        "qfls_err_range_ev",
+        "qfls_err_a0_ev",
+        "qfls_err_total_ev",
+    ),
+    "mu_e_ev": (
+        "mu_e_err_chi2_ev",
+        "mu_e_err_range_ev",
+        "mu_e_err_a0_ev",
+        "mu_e_err_total_ev",
+    ),
+    "mu_h_ev": (
+        "mu_h_err_chi2_ev",
+        "mu_h_err_range_ev",
+        "mu_h_err_a0_ev",
+        "mu_h_err_total_ev",
+    ),
+    "carrier_density_cm3": (
+        "carrier_density_err_chi2_cm3",
+        "carrier_density_err_range_cm3",
+        "carrier_density_err_a0_cm3",
+        "carrier_density_err_total_cm3",
+    ),
+}
+
+
+def _empty_like_fit_result(
+    *,
+    spectrum_id: str,
+    intensity_w_cm2: float,
+    a0_value: float,
+    a0_sigma: float,
+    fit_min_ev: float,
+    fit_max_ev: float,
+    window_mode: str,
+    n_points_fit: int,
+) -> dict[str, float | str | int]:
+    values: dict[str, float | str | int] = {field.name: np.nan for field in fields(FitResult)}
+    values.update(
+        {
+            "spectrum_id": spectrum_id,
+            "intensity_w_cm2": float(intensity_w_cm2),
+            "a0_value": float(a0_value),
+            "a0_sigma": float(a0_sigma),
+            "fit_min_ev": float(fit_min_ev),
+            "fit_max_ev": float(fit_max_ev),
+            "window_mode": window_mode,
+            "n_points_fit": int(n_points_fit),
+            "fit_range_samples": 0,
+        }
+    )
+    return values
+
+
+def _combine_parameter_error_components(
+    chi2_err: dict[str, float],
+    range_err: dict[str, float],
+    a0_err: dict[str, float],
+) -> dict[str, float]:
+    return {
+        key: _combine_uncertainties(chi2_err[key], range_err[key], a0_err[key])
+        for key in FIT_PARAMETER_KEYS
+    }
+
+
+def _build_intensity_model(
+    energy_ev: np.ndarray,
+    temperature_k: float,
+    qfls_effective_ev: float,
+) -> np.ndarray:
+    if (
+        (not np.isfinite(temperature_k))
+        or (temperature_k <= 0)
+        or (not np.isfinite(qfls_effective_ev))
+    ):
+        return np.full_like(energy_ev, np.nan, dtype=float)
+
+    qfls_effective_j = qfls_effective_ev * E_CHARGE
+    energy_j_all = energy_ev * E_CHARGE
+    ln_prefactor = np.log(2.0 * energy_j_all**2 / (H**3 * C**2))
+    ln_i_model = ln_prefactor - (energy_j_all - qfls_effective_j) / (K_B * temperature_k)
+    return np.exp(ln_i_model)
+
+
+def _build_fit_result(
+    *,
+    spectrum_id: str,
+    intensity_w_cm2: float,
+    a0_value: float,
+    a0_sigma: float,
+    fit_min_ev: float,
+    fit_max_ev: float,
+    window_mode: str,
+    n_points_fit: int,
+    slope: float,
+    intercept: float,
+    r2: float,
+    base_parameters: dict[str, float],
+    mu_e_fd_ev: float,
+    mu_h_fd_ev: float,
+    carrier_density_fd_cm3: float,
+    chi2_err: dict[str, float],
+    range_err: dict[str, float],
+    a0_err: dict[str, float],
+    total_err: dict[str, float],
+    fit_range_samples: int,
+) -> FitResult:
+    values = _empty_like_fit_result(
+        spectrum_id=spectrum_id,
+        intensity_w_cm2=intensity_w_cm2,
+        a0_value=a0_value,
+        a0_sigma=a0_sigma,
+        fit_min_ev=fit_min_ev,
+        fit_max_ev=fit_max_ev,
+        window_mode=window_mode,
+        n_points_fit=n_points_fit,
+    )
+    values.update(
+        {
+            "slope": float(slope),
+            "intercept": float(intercept),
+            "r2": float(r2),
+            "temperature_k": float(base_parameters["temperature_k"]),
+            "qfls_effective_ev": float(base_parameters["qfls_effective_ev"]),
+            "qfls_ev": float(base_parameters["qfls_ev"]),
+            "mu_e_ev": float(base_parameters["mu_e_ev"]),
+            "mu_h_ev": float(base_parameters["mu_h_ev"]),
+            "carrier_density_cm3": float(base_parameters["carrier_density_cm3"]),
+            "mu_e_fd_ev": float(mu_e_fd_ev),
+            "mu_h_fd_ev": float(mu_h_fd_ev),
+            "carrier_density_fd_cm3": float(carrier_density_fd_cm3),
+            "fit_range_samples": int(fit_range_samples),
+        }
+    )
+    for key, (
+        chi2_field,
+        range_field,
+        a0_field,
+        total_field,
+    ) in FIT_RESULT_ERROR_FIELDS.items():
+        values[chi2_field] = float(chi2_err[key])
+        values[range_field] = float(range_err[key])
+        values[a0_field] = float(a0_err[key])
+        values[total_field] = float(total_err[key])
+    return FitResult(**values)
 
 
 def setup_plot_style() -> None:
@@ -586,14 +756,26 @@ def _enumerate_window_fit_samples(
     if idx_candidate.size < min_points:
         return []
 
+    energy_j = energy_ev * E_CHARGE
+    valid_points = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
+    y_linearized = np.full_like(energy_ev, np.nan, dtype=float)
+    y_linearized[valid_points] = linearized_signal(
+        energy_ev[valid_points], intensity[valid_points]
+    )
+
+    energy_j_candidate = energy_j[idx_candidate]
+    y_candidate = y_linearized[idx_candidate]
+
     samples: list[WindowFitSample] = []
     n_candidate = idx_candidate.size
 
     for i in range(0, n_candidate - min_points + 1):
         for j in range(i + min_points - 1, n_candidate):
             idx_window = idx_candidate[i : j + 1]
-            x_j = energy_ev[idx_window] * E_CHARGE
-            y = linearized_signal(energy_ev[idx_window], intensity[idx_window])
+            x_j = energy_j_candidate[i : j + 1]
+            y = y_candidate[i : j + 1]
+            if not np.all(np.isfinite(y)):
+                continue
             slope, intercept, r2, _, ss_res = _compute_linear_fit_and_covariance(
                 x_j, y
             )
@@ -833,6 +1015,30 @@ def _combine_uncertainties(*errors: float) -> float:
     return float(np.sqrt(np.sum(finite_errors**2)))
 
 
+def _sanitize_nonnegative(values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    return np.where(np.isfinite(arr) & (arr >= 0), arr, 0.0)
+
+
+def _safe_ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
+    num = np.asarray(numerator, dtype=float)
+    den = np.asarray(denominator, dtype=float)
+    return np.divide(
+        num,
+        den,
+        out=np.full_like(num, np.nan, dtype=float),
+        where=np.isfinite(num) & np.isfinite(den) & (den > 0),
+    )
+
+
+def _assign_dataframe_columns(
+    dataframe: pd.DataFrame,
+    values: dict[str, float | np.ndarray],
+) -> None:
+    for column, value in values.items():
+        dataframe[column] = value
+
+
 def _safe_log_yerr(y: np.ndarray, err: np.ndarray) -> np.ndarray:
     y = np.asarray(y, dtype=float)
     err = np.asarray(err, dtype=float)
@@ -872,24 +1078,16 @@ def compute_power_balance_table(
     df = results_df.copy()
     p_exc_w_cm2 = df["intensity_w_cm2"].to_numpy(dtype=float)
     temperature_k = df["temperature_k"].to_numpy(dtype=float)
-    temperature_err_k = df["temperature_err_total_k"].to_numpy(dtype=float)
-    temperature_err_k = np.where(
-        np.isfinite(temperature_err_k) & (temperature_err_k >= 0),
-        temperature_err_k,
-        0.0,
+    temperature_err_k = _sanitize_nonnegative(
+        df["temperature_err_total_k"].to_numpy(dtype=float)
     )
     carrier_density_cm3 = df["carrier_density_cm3"].to_numpy(dtype=float)
     if "carrier_density_err_total_cm3" in df.columns:
-        carrier_density_err_cm3 = df["carrier_density_err_total_cm3"].to_numpy(
-            dtype=float
+        carrier_density_err_cm3 = _sanitize_nonnegative(
+            df["carrier_density_err_total_cm3"].to_numpy(dtype=float)
         )
     else:
         carrier_density_err_cm3 = np.zeros_like(carrier_density_cm3, dtype=float)
-    carrier_density_err_cm3 = np.where(
-        np.isfinite(carrier_density_err_cm3) & (carrier_density_err_cm3 >= 0),
-        carrier_density_err_cm3,
-        0.0,
-    )
 
     e_laser_j, e_laser_ev = _laser_photon_energy_from_wavelength(laser_wavelength_nm)
     eg_j = eg_ev * E_CHARGE
@@ -899,7 +1097,6 @@ def compute_power_balance_table(
 
     phi_abs_cm2_s = p_abs_w_cm2 / e_laser_j
     phi_abs_err_cm2_s = np.abs(p_exc_w_cm2 / e_laser_j) * absorptivity_at_laser_sigma
-
     phi_rad_cm2_s = plqy_eta * phi_abs_cm2_s
     phi_nonrad_cm2_s = (1.0 - plqy_eta) * phi_abs_cm2_s
 
@@ -923,7 +1120,6 @@ def compute_power_balance_table(
         eg_j + (3.0 - 2.0 * plqy_eta) * K_B * temperature_k,
         np.nan,
     )
-
     e_nonrad_j = np.where(valid_temperature, eg_j + 3.0 * K_B * temperature_k, np.nan)
     e_rad_j = np.where(valid_temperature, eg_j + K_B * temperature_k, np.nan)
     e_nonrad_ev = e_nonrad_j / E_CHARGE
@@ -942,11 +1138,7 @@ def compute_power_balance_table(
     cooling_factor = np.where(valid_temperature, 1.0 - beta_j / e_laser_j, np.nan)
 
     d_p_rec_d_a = np.where(valid_temperature, p_exc_w_cm2 * beta_j / e_laser_j, np.nan)
-    d_p_rec_d_eta = np.where(
-        valid_temperature,
-        prefactor * (-2.0 * K_B * temperature_k),
-        np.nan,
-    )
+    d_p_rec_d_eta = np.where(valid_temperature, prefactor * (-2.0 * K_B * temperature_k), np.nan)
     d_p_rec_d_t = np.where(
         valid_temperature,
         prefactor * (3.0 - 2.0 * plqy_eta) * K_B,
@@ -959,11 +1151,7 @@ def compute_power_balance_table(
     )
 
     d_p_th_d_a = np.where(valid_temperature, p_exc_w_cm2 * cooling_factor, np.nan)
-    d_p_th_d_eta = np.where(
-        valid_temperature,
-        prefactor * (2.0 * K_B * temperature_k),
-        np.nan,
-    )
+    d_p_th_d_eta = np.where(valid_temperature, prefactor * (2.0 * K_B * temperature_k), np.nan)
     d_p_th_d_t = np.where(
         valid_temperature,
         -prefactor * (3.0 - 2.0 * plqy_eta) * K_B,
@@ -992,103 +1180,68 @@ def compute_power_balance_table(
         np.nan,
     )
 
-    thermalized_fraction = np.divide(
-        p_th_w_cm2,
-        p_abs_w_cm2,
-        out=np.full_like(p_th_w_cm2, np.nan),
-        where=np.isfinite(p_abs_w_cm2) & (p_abs_w_cm2 > 0),
-    )
-    recombination_fraction = np.divide(
-        p_rec_w_cm2,
-        p_abs_w_cm2,
-        out=np.full_like(p_rec_w_cm2, np.nan),
-        where=np.isfinite(p_abs_w_cm2) & (p_abs_w_cm2 > 0),
-    )
-    radiative_fraction = np.divide(
-        p_rad_w_cm2,
-        p_abs_w_cm2,
-        out=np.full_like(p_rad_w_cm2, np.nan),
-        where=np.isfinite(p_abs_w_cm2) & (p_abs_w_cm2 > 0),
-    )
-    nonradiative_fraction = np.divide(
-        p_nonrad_w_cm2,
-        p_abs_w_cm2,
-        out=np.full_like(p_nonrad_w_cm2, np.nan),
-        where=np.isfinite(p_abs_w_cm2) & (p_abs_w_cm2 > 0),
-    )
-    thermalized_power_per_carrier_ev_s = np.divide(
+    thermalized_fraction = _safe_ratio(p_th_w_cm2, p_abs_w_cm2)
+    recombination_fraction = _safe_ratio(p_rec_w_cm2, p_abs_w_cm2)
+    radiative_fraction = _safe_ratio(p_rad_w_cm2, p_abs_w_cm2)
+    nonradiative_fraction = _safe_ratio(p_nonrad_w_cm2, p_abs_w_cm2)
+    thermalized_power_per_carrier_ev_s = _safe_ratio(
         p_th_w_cm3,
         carrier_density_cm3 * E_CHARGE,
-        out=np.full_like(p_th_w_cm3, np.nan),
-        where=np.isfinite(p_th_w_cm3)
-        & np.isfinite(carrier_density_cm3)
-        & (carrier_density_cm3 > 0),
     )
-    rel_p_th = np.divide(
-        p_th_err_w_cm3,
-        np.abs(p_th_w_cm3),
-        out=np.zeros_like(p_th_w_cm3),
-        where=np.isfinite(p_th_err_w_cm3)
-        & np.isfinite(p_th_w_cm3)
-        & (np.abs(p_th_w_cm3) > 0),
-    )
-    rel_n = np.divide(
-        carrier_density_err_cm3,
-        carrier_density_cm3,
-        out=np.zeros_like(carrier_density_cm3),
-        where=np.isfinite(carrier_density_err_cm3)
-        & np.isfinite(carrier_density_cm3)
-        & (carrier_density_cm3 > 0),
-    )
+    rel_p_th = np.nan_to_num(_safe_ratio(p_th_err_w_cm3, np.abs(p_th_w_cm3)), nan=0.0)
+    rel_n = np.nan_to_num(_safe_ratio(carrier_density_err_cm3, carrier_density_cm3), nan=0.0)
     thermalized_power_per_carrier_err_ev_s = (
         np.abs(thermalized_power_per_carrier_ev_s) * np.sqrt(rel_p_th**2 + rel_n**2)
     )
 
-    df["laser_wavelength_nm"] = float(laser_wavelength_nm)
-    df["laser_photon_energy_ev"] = float(e_laser_ev)
-    df["absorptivity_at_laser"] = float(absorptivity_at_laser)
-    df["absorptivity_at_laser_sigma"] = float(absorptivity_at_laser_sigma)
-    df["plqy_eta"] = float(plqy_eta)
-    df["plqy_eta_sigma"] = float(plqy_eta_sigma)
-    df["active_layer_thickness_nm"] = float(active_layer_thickness_nm)
-    df["active_layer_thickness_cm"] = float(thickness_cm)
-    df["absorbed_power_w_cm2"] = p_abs_w_cm2
-    df["absorbed_power_err_w_cm2"] = p_abs_err_w_cm2
-    df["absorbed_power_w_cm3"] = p_abs_w_cm3
-    df["absorbed_power_err_w_cm3"] = p_abs_err_w_cm3
-    df["absorbed_photon_flux_cm2_s"] = phi_abs_cm2_s
-    df["absorbed_photon_flux_err_cm2_s"] = phi_abs_err_cm2_s
-    df["radiative_photon_flux_cm2_s"] = phi_rad_cm2_s
-    df["radiative_photon_flux_err_cm2_s"] = phi_rad_err_cm2_s
-    df["nonradiative_photon_flux_cm2_s"] = phi_nonrad_cm2_s
-    df["nonradiative_photon_flux_err_cm2_s"] = phi_nonrad_err_cm2_s
-    df["recombination_energy_nonrad_ev"] = e_nonrad_ev
-    df["recombination_energy_rad_ev"] = e_rad_ev
-    df["recombination_energy_avg_ev"] = recombination_energy_per_pair_ev
-    df["thermalized_energy_per_pair_ev"] = thermalized_energy_per_pair_ev
-    df["nonradiative_power_w_cm2"] = p_nonrad_w_cm2
-    df["radiative_power_w_cm2"] = p_rad_w_cm2
-    df["recombination_power_w_cm2"] = p_rec_w_cm2
-    df["recombination_power_err_w_cm2"] = p_rec_err_w_cm2
-    df["thermalized_power_w_cm2"] = p_th_w_cm2
-    df["thermalized_power_err_w_cm2"] = p_th_err_w_cm2
-    df["nonradiative_power_w_cm3"] = p_nonrad_w_cm3
-    df["radiative_power_w_cm3"] = p_rad_w_cm3
-    df["recombination_power_w_cm3"] = p_rec_w_cm3
-    df["recombination_power_err_w_cm3"] = p_rec_err_w_cm3
-    df["thermalized_power_w_cm3"] = p_th_w_cm3
-    df["thermalized_power_err_w_cm3"] = p_th_err_w_cm3
-    df["thermalized_power_per_carrier_ev_s"] = thermalized_power_per_carrier_ev_s
-    df["thermalized_power_per_carrier_err_ev_s"] = (
-        thermalized_power_per_carrier_err_ev_s
+    _assign_dataframe_columns(
+        df,
+        {
+            "laser_wavelength_nm": float(laser_wavelength_nm),
+            "laser_photon_energy_ev": float(e_laser_ev),
+            "absorptivity_at_laser": float(absorptivity_at_laser),
+            "absorptivity_at_laser_sigma": float(absorptivity_at_laser_sigma),
+            "plqy_eta": float(plqy_eta),
+            "plqy_eta_sigma": float(plqy_eta_sigma),
+            "active_layer_thickness_nm": float(active_layer_thickness_nm),
+            "active_layer_thickness_cm": float(thickness_cm),
+            "absorbed_power_w_cm2": p_abs_w_cm2,
+            "absorbed_power_err_w_cm2": p_abs_err_w_cm2,
+            "absorbed_power_w_cm3": p_abs_w_cm3,
+            "absorbed_power_err_w_cm3": p_abs_err_w_cm3,
+            "absorbed_photon_flux_cm2_s": phi_abs_cm2_s,
+            "absorbed_photon_flux_err_cm2_s": phi_abs_err_cm2_s,
+            "radiative_photon_flux_cm2_s": phi_rad_cm2_s,
+            "radiative_photon_flux_err_cm2_s": phi_rad_err_cm2_s,
+            "nonradiative_photon_flux_cm2_s": phi_nonrad_cm2_s,
+            "nonradiative_photon_flux_err_cm2_s": phi_nonrad_err_cm2_s,
+            "recombination_energy_nonrad_ev": e_nonrad_ev,
+            "recombination_energy_rad_ev": e_rad_ev,
+            "recombination_energy_avg_ev": recombination_energy_per_pair_ev,
+            "thermalized_energy_per_pair_ev": thermalized_energy_per_pair_ev,
+            "nonradiative_power_w_cm2": p_nonrad_w_cm2,
+            "radiative_power_w_cm2": p_rad_w_cm2,
+            "recombination_power_w_cm2": p_rec_w_cm2,
+            "recombination_power_err_w_cm2": p_rec_err_w_cm2,
+            "thermalized_power_w_cm2": p_th_w_cm2,
+            "thermalized_power_err_w_cm2": p_th_err_w_cm2,
+            "nonradiative_power_w_cm3": p_nonrad_w_cm3,
+            "radiative_power_w_cm3": p_rad_w_cm3,
+            "recombination_power_w_cm3": p_rec_w_cm3,
+            "recombination_power_err_w_cm3": p_rec_err_w_cm3,
+            "thermalized_power_w_cm3": p_th_w_cm3,
+            "thermalized_power_err_w_cm3": p_th_err_w_cm3,
+            "thermalized_power_per_carrier_ev_s": thermalized_power_per_carrier_ev_s,
+            "thermalized_power_per_carrier_err_ev_s": thermalized_power_per_carrier_err_ev_s,
+            "power_balance_closure_w_cm2": p_abs_w_cm2 - (p_th_w_cm2 + p_rec_w_cm2),
+            "power_balance_closure_w_cm3": p_abs_w_cm3 - (p_th_w_cm3 + p_rec_w_cm3),
+            "carrier_balance_closure_cm2_s": phi_abs_cm2_s - (phi_rad_cm2_s + phi_nonrad_cm2_s),
+            "thermalized_fraction": thermalized_fraction,
+            "recombination_fraction": recombination_fraction,
+            "radiative_fraction": radiative_fraction,
+            "nonradiative_fraction": nonradiative_fraction,
+        },
     )
-    df["power_balance_closure_w_cm2"] = p_abs_w_cm2 - (p_th_w_cm2 + p_rec_w_cm2)
-    df["power_balance_closure_w_cm3"] = p_abs_w_cm3 - (p_th_w_cm3 + p_rec_w_cm3)
-    df["carrier_balance_closure_cm2_s"] = phi_abs_cm2_s - (phi_rad_cm2_s + phi_nonrad_cm2_s)
-    df["thermalized_fraction"] = thermalized_fraction
-    df["recombination_fraction"] = recombination_fraction
-    df["radiative_fraction"] = radiative_fraction
-    df["nonradiative_fraction"] = nonradiative_fraction
     return df
 
 
@@ -1139,6 +1292,39 @@ def auto_select_fit_window(
     return fit_mask, fit_min_ev, fit_max_ev, window_mode, candidate_mask
 
 
+def _resolve_fit_window(
+    energy_ev: np.ndarray,
+    intensity: np.ndarray,
+    auto_select_fit_window_enabled: bool,
+    fit_min_ev_fixed: float,
+    fit_max_ev_fixed: float,
+    assumed_a0: float,
+) -> tuple[np.ndarray, float, float, str, np.ndarray]:
+    if auto_select_fit_window_enabled:
+        return auto_select_fit_window(
+            energy_ev=energy_ev,
+            intensity=intensity,
+            assumed_a0=assumed_a0,
+        )
+
+    valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
+    in_window = (energy_ev >= fit_min_ev_fixed) & (energy_ev <= fit_max_ev_fixed)
+    fit_mask = valid & in_window
+    scan_candidate_mask, _ = _build_scan_candidate_mask(
+        energy_ev=energy_ev,
+        intensity=intensity,
+        min_points=max(3, FIT_RANGE_SCAN_MIN_POINTS),
+        prefer_peak_offset=False,
+    )
+    return (
+        fit_mask,
+        fit_min_ev_fixed,
+        fit_max_ev_fixed,
+        "fixed",
+        scan_candidate_mask,
+    )
+
+
 def fit_single_spectrum(
     energy_ev: np.ndarray,
     intensity: np.ndarray,
@@ -1155,81 +1341,33 @@ def fit_single_spectrum(
     list[tuple[float, float]],
     tuple[float, float] | None,
 ]:
-    if auto_select_fit_window_enabled:
-        (
-            fit_mask,
-            fit_min_ev,
-            fit_max_ev,
-            window_mode,
-            scan_candidate_mask,
-        ) = auto_select_fit_window(
-            energy_ev=energy_ev,
-            intensity=intensity,
-            assumed_a0=assumed_a0,
-        )
-    else:
-        valid = np.isfinite(energy_ev) & np.isfinite(intensity) & (intensity > 0)
-        in_window = (energy_ev >= fit_min_ev_fixed) & (energy_ev <= fit_max_ev_fixed)
-        fit_mask = valid & in_window
-        fit_min_ev = fit_min_ev_fixed
-        fit_max_ev = fit_max_ev_fixed
-        window_mode = "fixed"
-        scan_candidate_mask, _ = _build_scan_candidate_mask(
-            energy_ev=energy_ev,
-            intensity=intensity,
-            min_points=max(3, FIT_RANGE_SCAN_MIN_POINTS),
-            prefer_peak_offset=False,
-        )
-
-    if np.count_nonzero(fit_mask) < 3:
-        result = FitResult(
+    (
+        fit_mask,
+        fit_min_ev,
+        fit_max_ev,
+        window_mode,
+        scan_candidate_mask,
+    ) = _resolve_fit_window(
+        energy_ev=energy_ev,
+        intensity=intensity,
+        auto_select_fit_window_enabled=auto_select_fit_window_enabled,
+        fit_min_ev_fixed=fit_min_ev_fixed,
+        fit_max_ev_fixed=fit_max_ev_fixed,
+        assumed_a0=assumed_a0,
+    )
+    n_points_fit = int(np.count_nonzero(fit_mask))
+    if n_points_fit < 3:
+        empty_values = _empty_like_fit_result(
             spectrum_id=spectrum_id,
-            intensity_w_cm2=float(intensity_w_cm2),
-            a0_value=float(assumed_a0),
-            a0_sigma=float(a0_sigma),
-            fit_min_ev=float(fit_min_ev),
-            fit_max_ev=float(fit_max_ev),
+            intensity_w_cm2=intensity_w_cm2,
+            a0_value=assumed_a0,
+            a0_sigma=a0_sigma,
+            fit_min_ev=fit_min_ev,
+            fit_max_ev=fit_max_ev,
             window_mode=window_mode,
-            n_points_fit=int(np.count_nonzero(fit_mask)),
-            slope=np.nan,
-            intercept=np.nan,
-            r2=np.nan,
-            temperature_k=np.nan,
-            qfls_effective_ev=np.nan,
-            qfls_ev=np.nan,
-            mu_e_ev=np.nan,
-            mu_h_ev=np.nan,
-            carrier_density_cm3=np.nan,
-            mu_e_fd_ev=np.nan,
-            mu_h_fd_ev=np.nan,
-            carrier_density_fd_cm3=np.nan,
-            temperature_err_chi2_k=np.nan,
-            temperature_err_range_k=np.nan,
-            temperature_err_a0_k=np.nan,
-            temperature_err_total_k=np.nan,
-            qfls_effective_err_chi2_ev=np.nan,
-            qfls_effective_err_range_ev=np.nan,
-            qfls_effective_err_a0_ev=np.nan,
-            qfls_effective_err_total_ev=np.nan,
-            qfls_err_chi2_ev=np.nan,
-            qfls_err_range_ev=np.nan,
-            qfls_err_a0_ev=np.nan,
-            qfls_err_total_ev=np.nan,
-            mu_e_err_chi2_ev=np.nan,
-            mu_e_err_range_ev=np.nan,
-            mu_e_err_a0_ev=np.nan,
-            mu_e_err_total_ev=np.nan,
-            mu_h_err_chi2_ev=np.nan,
-            mu_h_err_range_ev=np.nan,
-            mu_h_err_a0_ev=np.nan,
-            mu_h_err_total_ev=np.nan,
-            carrier_density_err_chi2_cm3=np.nan,
-            carrier_density_err_range_cm3=np.nan,
-            carrier_density_err_a0_cm3=np.nan,
-            carrier_density_err_total_cm3=np.nan,
-            fit_range_samples=0,
+            n_points_fit=n_points_fit,
         )
-        return result, np.full_like(intensity, np.nan, dtype=float), [], None
+        return FitResult(**empty_values), np.full_like(intensity, np.nan, dtype=float), [], None
 
     x_j = energy_ev[fit_mask] * E_CHARGE
     y = linearized_signal(energy_ev[fit_mask], intensity[fit_mask])
@@ -1288,93 +1426,38 @@ def fit_single_spectrum(
         assumed_a0=assumed_a0,
         a0_sigma=a0_sigma,
     )
-
-    temperature_err_total_k = _combine_uncertainties(
-        chi2_err["temperature_k"],
-        range_err["temperature_k"],
-        a0_err["temperature_k"],
+    total_err = _combine_parameter_error_components(
+        chi2_err=chi2_err,
+        range_err=range_err,
+        a0_err=a0_err,
     )
-    qfls_effective_err_total_ev = _combine_uncertainties(
-        chi2_err["qfls_effective_ev"],
-        range_err["qfls_effective_ev"],
-        a0_err["qfls_effective_ev"],
-    )
-    qfls_err_total_ev = _combine_uncertainties(
-        chi2_err["qfls_ev"],
-        range_err["qfls_ev"],
-        a0_err["qfls_ev"],
-    )
-    mu_e_err_total_ev = _combine_uncertainties(
-        chi2_err["mu_e_ev"],
-        range_err["mu_e_ev"],
-        a0_err["mu_e_ev"],
-    )
-    mu_h_err_total_ev = _combine_uncertainties(
-        chi2_err["mu_h_ev"],
-        range_err["mu_h_ev"],
-        a0_err["mu_h_ev"],
-    )
-    carrier_density_err_total_cm3 = _combine_uncertainties(
-        chi2_err["carrier_density_cm3"],
-        range_err["carrier_density_cm3"],
-        a0_err["carrier_density_cm3"],
+    intensity_model = _build_intensity_model(
+        energy_ev=energy_ev,
+        temperature_k=temperature_k,
+        qfls_effective_ev=qfls_effective_ev,
     )
 
-    if np.isfinite(temperature_k) and temperature_k > 0 and np.isfinite(qfls_effective_ev):
-        qfls_effective_j = qfls_effective_ev * E_CHARGE
-        energy_j_all = energy_ev * E_CHARGE
-        ln_prefactor = np.log(2.0 * energy_j_all**2 / (H**3 * C**2))
-        ln_i_model = ln_prefactor - (energy_j_all - qfls_effective_j) / (K_B * temperature_k)
-        intensity_model = np.exp(ln_i_model)
-    else:
-        intensity_model = np.full_like(intensity, np.nan, dtype=float)
-
-    result = FitResult(
+    result = _build_fit_result(
         spectrum_id=spectrum_id,
-        intensity_w_cm2=float(intensity_w_cm2),
-        a0_value=float(assumed_a0),
-        a0_sigma=float(a0_sigma),
-        fit_min_ev=float(fit_min_ev),
-        fit_max_ev=float(fit_max_ev),
+        intensity_w_cm2=intensity_w_cm2,
+        a0_value=assumed_a0,
+        a0_sigma=a0_sigma,
+        fit_min_ev=fit_min_ev,
+        fit_max_ev=fit_max_ev,
         window_mode=window_mode,
-        n_points_fit=int(np.count_nonzero(fit_mask)),
-        slope=float(slope),
-        intercept=float(intercept),
-        r2=float(r2),
-        temperature_k=float(temperature_k),
-        qfls_effective_ev=float(qfls_effective_ev),
-        qfls_ev=float(qfls_ev),
-        mu_e_ev=float(mu_e_ev),
-        mu_h_ev=float(mu_h_ev),
-        carrier_density_cm3=float(n_cm3),
-        mu_e_fd_ev=float(mu_e_fd_ev),
-        mu_h_fd_ev=float(mu_h_fd_ev),
-        carrier_density_fd_cm3=float(n_fd_cm3),
-        temperature_err_chi2_k=float(chi2_err["temperature_k"]),
-        temperature_err_range_k=float(range_err["temperature_k"]),
-        temperature_err_a0_k=float(a0_err["temperature_k"]),
-        temperature_err_total_k=float(temperature_err_total_k),
-        qfls_effective_err_chi2_ev=float(chi2_err["qfls_effective_ev"]),
-        qfls_effective_err_range_ev=float(range_err["qfls_effective_ev"]),
-        qfls_effective_err_a0_ev=float(a0_err["qfls_effective_ev"]),
-        qfls_effective_err_total_ev=float(qfls_effective_err_total_ev),
-        qfls_err_chi2_ev=float(chi2_err["qfls_ev"]),
-        qfls_err_range_ev=float(range_err["qfls_ev"]),
-        qfls_err_a0_ev=float(a0_err["qfls_ev"]),
-        qfls_err_total_ev=float(qfls_err_total_ev),
-        mu_e_err_chi2_ev=float(chi2_err["mu_e_ev"]),
-        mu_e_err_range_ev=float(range_err["mu_e_ev"]),
-        mu_e_err_a0_ev=float(a0_err["mu_e_ev"]),
-        mu_e_err_total_ev=float(mu_e_err_total_ev),
-        mu_h_err_chi2_ev=float(chi2_err["mu_h_ev"]),
-        mu_h_err_range_ev=float(range_err["mu_h_ev"]),
-        mu_h_err_a0_ev=float(a0_err["mu_h_ev"]),
-        mu_h_err_total_ev=float(mu_h_err_total_ev),
-        carrier_density_err_chi2_cm3=float(chi2_err["carrier_density_cm3"]),
-        carrier_density_err_range_cm3=float(range_err["carrier_density_cm3"]),
-        carrier_density_err_a0_cm3=float(a0_err["carrier_density_cm3"]),
-        carrier_density_err_total_cm3=float(carrier_density_err_total_cm3),
-        fit_range_samples=int(n_windows_range),
+        n_points_fit=n_points_fit,
+        slope=slope,
+        intercept=intercept,
+        r2=r2,
+        base_parameters=base_parameters,
+        mu_e_fd_ev=mu_e_fd_ev,
+        mu_h_fd_ev=mu_h_fd_ev,
+        carrier_density_fd_cm3=n_fd_cm3,
+        chi2_err=chi2_err,
+        range_err=range_err,
+        a0_err=a0_err,
+        total_err=total_err,
+        fit_range_samples=n_windows_range,
     )
     return result, intensity_model, range_windows_ev, scan_domain_ev
 
@@ -2147,97 +2230,51 @@ def plot_power_balance(results_df: pd.DataFrame, outpath: Path) -> None:
     plt.close(fig)
 
 
-def main() -> None:
-    setup_plot_style()
-    if ASSUMED_A0 <= 0:
-        raise ValueError("ASSUMED_A0 must be strictly positive.")
-    if A0_SIGMA < 0:
-        raise ValueError("A0_SIGMA must be non-negative.")
-    if LASER_WAVELENGTH_NM <= 0:
-        raise ValueError("LASER_WAVELENGTH_NM must be strictly positive.")
-    if (ABSORPTIVITY_AT_LASER < 0) or (ABSORPTIVITY_AT_LASER > 1):
-        raise ValueError("ABSORPTIVITY_AT_LASER must be in [0, 1].")
-    if ABSORPTIVITY_AT_LASER_SIGMA < 0:
-        raise ValueError("ABSORPTIVITY_AT_LASER_SIGMA must be non-negative.")
-    if (PLQY_ETA < 0) or (PLQY_ETA > 1):
-        raise ValueError("PLQY_ETA must be in [0, 1].")
-    if PLQY_ETA_SIGMA < 0:
-        raise ValueError("PLQY_ETA_SIGMA must be non-negative.")
-    if ACTIVE_LAYER_THICKNESS_NM <= 0:
-        raise ValueError("ACTIVE_LAYER_THICKNESS_NM must be strictly positive.")
-    if (FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE <= 0) or (
-        FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE > 1
+def _validate_configuration() -> None:
+    checks = (
+        (ASSUMED_A0 > 0, "ASSUMED_A0 must be strictly positive."),
+        (A0_SIGMA >= 0, "A0_SIGMA must be non-negative."),
+        (LASER_WAVELENGTH_NM > 0, "LASER_WAVELENGTH_NM must be strictly positive."),
+        (
+            0 <= ABSORPTIVITY_AT_LASER <= 1,
+            "ABSORPTIVITY_AT_LASER must be in [0, 1].",
+        ),
+        (
+            ABSORPTIVITY_AT_LASER_SIGMA >= 0,
+            "ABSORPTIVITY_AT_LASER_SIGMA must be non-negative.",
+        ),
+        (0 <= PLQY_ETA <= 1, "PLQY_ETA must be in [0, 1]."),
+        (PLQY_ETA_SIGMA >= 0, "PLQY_ETA_SIGMA must be non-negative."),
+        (
+            ACTIVE_LAYER_THICKNESS_NM > 0,
+            "ACTIVE_LAYER_THICKNESS_NM must be strictly positive.",
+        ),
+        (
+            0 < FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE <= 1,
+            "FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE must be in the interval (0, 1].",
+        ),
+    )
+    for is_valid, message in checks:
+        if not is_valid:
+            raise ValueError(message)
+
+
+def _fit_all_spectra(
+    energy_ev: np.ndarray,
+    spectra: np.ndarray,
+    spectrum_ids: list[str],
+    intensities_w_cm2: np.ndarray,
+    fit_dir: Path,
+) -> list[FitResult]:
+    all_results: list[FitResult] = []
+    for i, (spectrum_id, intensity_w_cm2) in enumerate(
+        zip(spectrum_ids, intensities_w_cm2, strict=True)
     ):
-        raise ValueError(
-            "FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE must be in the interval (0, 1]."
-        )
-
-    root = Path(__file__).resolve().parent
-    out_dir = root / "outputs"
-    fit_dir = out_dir / "fits"
-    out_dir.mkdir(exist_ok=True)
-    fit_dir.mkdir(exist_ok=True)
-
-    df_pl = load_spectra(root, FILENAME)
-    energy_ev = df_pl.index.to_numpy(dtype=float)
-    spectra = df_pl.to_numpy(dtype=float)
-    spectrum_ids = list(df_pl.columns.astype(str))
-
-    if len(EXCITATION_INTENSITY_W_CM2) != spectra.shape[1]:
-        raise ValueError(
-            "Intensity list has "
-            f"{len(EXCITATION_INTENSITY_W_CM2)} values but file has "
-            f"{spectra.shape[1]} spectra."
-        )
-
-    # Sort by increasing energy for cleaner plots and fits
-    sort_idx = np.argsort(energy_ev)
-    energy_ev = energy_ev[sort_idx]
-    spectra = spectra[sort_idx, :]
-
-    plot_raw_spectra(
-        energy_ev=energy_ev,
-        spectra=spectra,
-        intensities_w_cm2=EXCITATION_INTENSITY_W_CM2,
-        outpath=out_dir / "all_spectra_logscale.png",
-    )
-
-    # First spectrum fit (requested starting point)
-    (
-        first_result,
-        first_model,
-        first_range_windows,
-        first_scan_domain,
-    ) = fit_single_spectrum(
-        energy_ev=energy_ev,
-        intensity=spectra[:, 0],
-        spectrum_id=spectrum_ids[0],
-        intensity_w_cm2=float(EXCITATION_INTENSITY_W_CM2[0]),
-        auto_select_fit_window_enabled=AUTO_SELECT_FIT_WINDOW,
-        fit_min_ev_fixed=FIT_ENERGY_MIN_EV,
-        fit_max_ev_fixed=FIT_ENERGY_MAX_EV,
-        assumed_a0=ASSUMED_A0,
-        a0_sigma=A0_SIGMA,
-    )
-    plot_single_fit(
-        energy_ev=energy_ev,
-        intensity=spectra[:, 0],
-        intensity_model=first_model,
-        result=first_result,
-        fit_range_windows_ev=first_range_windows,
-        scan_domain_ev=first_scan_domain,
-        outpath=fit_dir / "fit_spectrum_00.png",
-    )
-
-    all_results: list[FitResult] = [first_result]
-
-    # Then iterate over all remaining spectra
-    for i in range(1, spectra.shape[1]):
         result, intensity_model, range_windows, scan_domain = fit_single_spectrum(
             energy_ev=energy_ev,
             intensity=spectra[:, i],
-            spectrum_id=spectrum_ids[i],
-            intensity_w_cm2=float(EXCITATION_INTENSITY_W_CM2[i]),
+            spectrum_id=spectrum_id,
+            intensity_w_cm2=float(intensity_w_cm2),
             auto_select_fit_window_enabled=AUTO_SELECT_FIT_WINDOW,
             fit_min_ev_fixed=FIT_ENERGY_MIN_EV,
             fit_max_ev_fixed=FIT_ENERGY_MAX_EV,
@@ -2254,30 +2291,15 @@ def main() -> None:
             scan_domain_ev=scan_domain,
             outpath=fit_dir / f"fit_spectrum_{i:02d}.png",
         )
+    return all_results
 
-    results_df = pd.DataFrame([r.__dict__ for r in all_results])
-    results_df = compute_power_balance_table(
-        results_df=results_df,
-        laser_wavelength_nm=LASER_WAVELENGTH_NM,
-        absorptivity_at_laser=ABSORPTIVITY_AT_LASER,
-        absorptivity_at_laser_sigma=ABSORPTIVITY_AT_LASER_SIGMA,
-        plqy_eta=PLQY_ETA,
-        plqy_eta_sigma=PLQY_ETA_SIGMA,
-        active_layer_thickness_nm=ACTIVE_LAYER_THICKNESS_NM,
-        eg_ev=EG_EV,
-    )
-    tsai_model_df = load_tsai_model_table(TSAI_MODEL_TABLE_CSV)
-    comparison_df = plot_pth_nt_comparison(
-        results_df=results_df,
-        outpath=out_dir / "pth_nT_comparison.png",
-        theory_df=tsai_model_df,
-    )
-    results_df.to_csv(out_dir / "fit_results.csv", index=False)
-    plot_summary(results_df, out_dir / "parameters_vs_intensity.png")
-    plot_power_balance(results_df, out_dir / "thermalized_power_vs_absorbed.png")
-    if comparison_df is not None:
-        comparison_df.to_csv(out_dir / "pth_experiment_vs_tsai.csv", index=False)
 
+def _print_run_summary(
+    out_dir: Path,
+    fit_dir: Path,
+    comparison_df: pd.DataFrame | None,
+    tsai_model_df: pd.DataFrame | None,
+) -> None:
     print("Done.")
     print(f"Raw spectra plot: {out_dir / 'all_spectra_logscale.png'}")
     print(f"Spectrum fits:    {fit_dir}")
@@ -2325,6 +2347,78 @@ def main() -> None:
             "Tsai model table: "
             f"{TSAI_MODEL_TABLE_CSV} | points={tsai_model_df.shape[0]}"
         )
+
+
+def main() -> None:
+    setup_plot_style()
+    _validate_configuration()
+
+    root = Path(__file__).resolve().parent
+    out_dir = root / "outputs"
+    fit_dir = out_dir / "fits"
+    out_dir.mkdir(exist_ok=True)
+    fit_dir.mkdir(exist_ok=True)
+
+    df_pl = load_spectra(root, FILENAME)
+    energy_ev = df_pl.index.to_numpy(dtype=float)
+    spectra = df_pl.to_numpy(dtype=float)
+    spectrum_ids = list(df_pl.columns.astype(str))
+
+    if len(EXCITATION_INTENSITY_W_CM2) != spectra.shape[1]:
+        raise ValueError(
+            "Intensity list has "
+            f"{len(EXCITATION_INTENSITY_W_CM2)} values but file has "
+            f"{spectra.shape[1]} spectra."
+        )
+
+    # Sort by increasing energy for cleaner plots and fits
+    sort_idx = np.argsort(energy_ev)
+    energy_ev = energy_ev[sort_idx]
+    spectra = spectra[sort_idx, :]
+
+    plot_raw_spectra(
+        energy_ev=energy_ev,
+        spectra=spectra,
+        intensities_w_cm2=EXCITATION_INTENSITY_W_CM2,
+        outpath=out_dir / "all_spectra_logscale.png",
+    )
+
+    all_results = _fit_all_spectra(
+        energy_ev=energy_ev,
+        spectra=spectra,
+        spectrum_ids=spectrum_ids,
+        intensities_w_cm2=EXCITATION_INTENSITY_W_CM2,
+        fit_dir=fit_dir,
+    )
+
+    results_df = pd.DataFrame([r.__dict__ for r in all_results])
+    results_df = compute_power_balance_table(
+        results_df=results_df,
+        laser_wavelength_nm=LASER_WAVELENGTH_NM,
+        absorptivity_at_laser=ABSORPTIVITY_AT_LASER,
+        absorptivity_at_laser_sigma=ABSORPTIVITY_AT_LASER_SIGMA,
+        plqy_eta=PLQY_ETA,
+        plqy_eta_sigma=PLQY_ETA_SIGMA,
+        active_layer_thickness_nm=ACTIVE_LAYER_THICKNESS_NM,
+        eg_ev=EG_EV,
+    )
+    tsai_model_df = load_tsai_model_table(TSAI_MODEL_TABLE_CSV)
+    comparison_df = plot_pth_nt_comparison(
+        results_df=results_df,
+        outpath=out_dir / "pth_nT_comparison.png",
+        theory_df=tsai_model_df,
+    )
+    results_df.to_csv(out_dir / "fit_results.csv", index=False)
+    plot_summary(results_df, out_dir / "parameters_vs_intensity.png")
+    plot_power_balance(results_df, out_dir / "thermalized_power_vs_absorbed.png")
+    if comparison_df is not None:
+        comparison_df.to_csv(out_dir / "pth_experiment_vs_tsai.csv", index=False)
+    _print_run_summary(
+        out_dir=out_dir,
+        fit_dir=fit_dir,
+        comparison_df=comparison_df,
+        tsai_model_df=tsai_model_df,
+    )
 
 
 if __name__ == "__main__":
