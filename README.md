@@ -122,16 +122,132 @@ Area to volume conversion uses active-layer thickness `d`:
 
 ## 4) Uncertainty Treatment
 
-Total uncertainty is combined in quadrature:
+For each reported fit parameter `p in {T, Delta_mu_eff, Delta_mu, mu_e, mu_h, n}`, the code stores three uncertainty components and one combined value:
 
-`sigma_total^2 = sigma_chi2^2 + sigma_range^2 + sigma_A0^2`
+`sigma_total(p) = sqrt( sigma_chi2(p)^2 + sigma_range(p)^2 + sigma_A0(p)^2 )`
 
-Components:
-- `chi2`: linear-fit covariance (slope/intercept) propagated to `T`, `Delta_mu`, and MB-derived `mu_e`, `mu_h`, `n`.
-- `range`: objective fit-window ensemble; candidate windows are scored with AICc and converted to weighted RMS spread.
-- `A0`: absorptivity uncertainty propagation (`dDelta_mu/dA0 = -(k_B T)/(e A0)`) plus downstream Jacobian propagation for MB-derived quantities.
+In implementation, this quadrature sum is applied over all finite components (NaNs are ignored).
 
-Power-balance uncertainties include derivatives with respect to `A_laser`, `eta`, and fitted `T`.
+### 4.1 `chi2` component (line-fit covariance propagation)
+
+The GPL-tail regression is:
+
+`y_i = m x_i + b`, with `x_i = E_i (in J)`
+
+The residual variance estimate is:
+
+`s^2 = RSS / (N - 2)`, where `RSS = sum_i (y_i - yhat_i)^2`
+
+For a 2-parameter linear fit, the slope/intercept covariance is:
+
+`Var(m)   = s^2 / Sxx`
+
+`Var(b)   = s^2 * (1/N + xbar^2 / Sxx)`
+
+`Cov(m,b) = -xbar * s^2 / Sxx`
+
+with `Sxx = sum_i (x_i - xbar)^2`.
+
+Primary parameter transforms are:
+
+`T = -1 / (k_B m)`
+
+`Delta_mu_eff = -b / (m e)`  (equivalent to `b k_B T / e`)
+
+`Delta_mu = Delta_mu_eff - (k_B T / e) ln(A0)`
+
+Using Jacobian propagation from `(m,b)` to `(T, Delta_mu_eff, Delta_mu)`:
+
+`Cov_primary = J_primary * Cov_(m,b) * J_primary^T`
+
+where the code uses:
+
+`dT/dm = 1 / (k_B m^2)`
+
+`dDelta_mu_eff/dm = b / (m^2 e)`, `dDelta_mu_eff/db = -1 / (m e)`
+
+`dDelta_mu/dm = dDelta_mu_eff/dm - [(k_B/e) ln(A0)] * dT/dm`
+
+`dDelta_mu/db = dDelta_mu_eff/db`
+
+For MB-derived `(mu_e, mu_h, n)`, the code computes a numerical Jacobian
+`J_MB = d(mu_e,mu_h,n)/d(T,Delta_mu)` by central finite differences, then:
+
+`Cov_MB = J_MB * Cov_(T,Delta_mu) * J_MB^T`
+
+and uncertainties are `sqrt` of diagonal terms.
+
+### 4.2 `range` component (fit-window-selection uncertainty)
+
+This term quantifies sensitivity to the chosen fit energy interval.
+
+1. Build candidate windows:
+- Use contiguous sub-windows within the scan domain.
+- Keep only windows with:
+  `n_points >= FIT_RANGE_SCAN_MIN_POINTS`,
+  negative slope,
+  `R^2 >= FIT_RANGE_SCAN_MIN_R2`,
+  finite derived parameters,
+  and (optionally) physical `T` bounds.
+
+2. Score each window with AICc:
+
+`AIC  = N ln(RSS/N) + 2k`
+
+`AICc = AIC + [2k(k+1)] / (N-k-1)`
+
+with `k = 2` (slope, intercept). Lower `AICc` is better. Absolute AICc has no standalone meaning; differences between windows matter.
+
+3. Convert to Akaike weights:
+
+`Delta_i = AICc_i - min_j(AICc_j)`
+
+`w_i = exp(-0.5 Delta_i) / sum_j exp(-0.5 Delta_j)`
+
+Interpretation: `w_i` is the relative support for window `i` inside the tested set.
+
+4. Compute weighted RMS spread around the base-fit value:
+
+`sigma_range(p) = sqrt( sum_i w_i * (p_i - p_base)^2 )`
+
+`p_base` is the parameter from the primary selected window (auto-selected best window, or user-fixed window). So this is a "window-choice sensitivity" metric, not a posterior over `p`.
+
+### 4.3 `A0` component (absorptivity prior uncertainty)
+
+Nominal high-energy absorptivity is:
+
+`A0 = 0.5 * (A0_min + A0_max)`
+
+Its sigma is configured as either:
+
+`sigma_A0 = (A0_max - A0_min)/sqrt(12)` (uniform model), or
+
+`sigma_A0 = 0.5 * (A0_max - A0_min)` (half-range model).
+
+Since `T` and `Delta_mu_eff` do not depend on `A0`, only `Delta_mu` shifts:
+
+`dDelta_mu/dA0 = -(k_B T)/(e A0)`
+
+`sigma_A0(Delta_mu) = |dDelta_mu/dA0| * sigma_A0`
+
+Then `(mu_e, mu_h, n)` receive this uncertainty through the same MB Jacobian with:
+
+`Cov_(T,Delta_mu)^(A0) = [[0,0],[0,sigma_A0(Delta_mu)^2]]`
+
+### 4.4 Power-balance uncertainty propagation
+
+For `P_rec` and `P_th`, first-order propagation is applied with independent inputs
+`A_laser`, `eta`, and fitted `T`:
+
+`sigma_f^2 = (df/dA_laser * sigma_A_laser)^2 + (df/deta * sigma_eta)^2 + (df/dT * sigma_T)^2`
+
+using analytic derivatives implemented in `compute_power_balance_table()`.
+
+Example compact forms used by the code:
+
+`P_rec = (A_laser P_exc / E_laser) * [E_g + (3 - 2 eta) k_B T]`
+
+`P_th  = A_laser P_exc - P_rec`
 
 ## 5) Execution Pipeline
 
