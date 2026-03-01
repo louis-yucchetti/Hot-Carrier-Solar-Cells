@@ -6,6 +6,7 @@ For each spectrum, the pipeline reports:
 - carrier temperature `T`,
 - quasi-Fermi level splitting (QFLS), written as `Delta_mu`,
 - electron and hole chemical potentials plus carrier density from Maxwell-Boltzmann (MB) and Fermi-Dirac (FD) statistics,
+- a dedicated MB-validity diagnostic from the analytically integrated generalized Planck law,
 - absorbed, recombination, and thermalized power channels,
 - uncertainty components from line-fit statistics, fit-window choice, and absorptivity prior.
 
@@ -126,6 +127,44 @@ with:
 and `Delta_mu = mu_e + mu_h`. Neutrality is solved numerically by bisection.
 
 The optical fit provides `T` and `Delta_mu`; MB and FD only change the back-calculated `mu_e`, `mu_h`, and `n`.
+
+### 4.4 MB validity-limit diagnostic (integrated GPL test)
+
+To identify where MB stops being accurate, the code evaluates:
+
+`Phi = integral_{E_g}^inf I_PC(E) dE`
+
+with the generalized Planck law and a step absorber:
+
+`I_PC(E) = [2 E^2 / (h^3 c^2)] * A_0 * {exp[(E - Delta_mu)/(k_B T)] - 1}^-1`
+
+`A(E) = A_0 * Theta(E - E_g)`
+
+Define the reduced QFLS variable:
+
+`x = (Delta_mu - E_g) / (k_B T)`, `r = exp(x)`  (physical domain: `x < 0`, so `0 < r < 1`)
+
+Then the exact BE-photon integral is:
+
+`Phi_BE = [2 A_0/(h^3 c^2)] * [E_g^2 (k_B T) Li_1(r) + 2 E_g (k_B T)^2 Li_2(r) + 2 (k_B T)^3 Li_3(r)]`
+
+and the MB approximation (first Boltzmann term) is:
+
+`Phi_MB = [2 A_0/(h^3 c^2)] * exp(x) * [E_g^2 (k_B T) + 2 E_g (k_B T)^2 + 2 (k_B T)^3]`
+
+So in MB regime:
+
+`ln(Phi_MB) = x + const(T)`
+
+which is affine in `x`. The code plots `ln(Phi_BE)` and the affine MB reference versus `x`, and computes:
+
+`epsilon_MB = Phi_BE / Phi_MB - 1`
+
+The MB validity boundary `x*` is defined as the first `x` where `epsilon_MB` exceeds a configurable threshold (default 5%).
+
+Interpretation used in this project:
+- in MB-valid region (`x << 0`), MB can be used consistently for both carrier back-extraction and photon occupation;
+- once `x` approaches the degenerate side (near `0`), MB is no longer accurate, and the physically consistent treatment is FD for carriers and BE for photons.
 
 ## 5) Power-Balance Model
 
@@ -276,9 +315,10 @@ Analytic derivatives are implemented in `compute_power_balance_table()`.
 7. Reconstruct MB and FD carrier quantities.
 8. Compute and combine uncertainty components.
 9. Compute power-balance quantities and uncertainties.
-10. Export tables and diagnostic figures.
-11. Optionally overlay a user-provided Tsai lookup table (`TSAI_MODEL_TABLE_CSV`).
-12. Run Tsai Eq. 41 + Eq. 48 electron-cooling simulation:
+10. Run MB-validity diagnostic (`ln(integral I_PC dE)` vs `(Delta_mu-E_g)/(k_B T)`), detect `x*`, and export MB-limit figure/tables.
+11. Export tables and diagnostic figures.
+12. Optionally overlay a user-provided Tsai lookup table (`TSAI_MODEL_TABLE_CSV`).
+13. Run Tsai Eq. 41 + Eq. 48 electron-cooling simulation:
     - forward map `(Delta_mu, T) -> mu_e(Delta_mu,T) -> (du/dt)_intra -> P_th`,
     - inverse map `(P_th, Delta_mu) -> T`,
     - evaluate simulated `T` at experimental `(P_th, Delta_mu)` points.
@@ -319,6 +359,12 @@ For the built-in Tsai Eq. 41/Eq. 48 workflow, key controls are in `hot_carrier/c
 - `TSAI_Q_MIN_CM1`, `TSAI_Q_MAX_CM1`, `TSAI_Q_POINTS`
 - `TSAI_DELTA_MU_GRID_*`, `TSAI_MU_E_GRID_*`, `TSAI_T_GRID_*`, `TSAI_PTH_INVERSE_POINTS`
 
+For the MB-validity-limit diagnostic:
+- `MB_VALIDITY_ENABLE`
+- `MB_VALIDITY_X_MIN`, `MB_VALIDITY_X_MAX`, `MB_VALIDITY_X_POINTS`
+- `MB_VALIDITY_REL_ERROR_LIMIT`
+- `MB_VALIDITY_REFERENCE_TEMPERATURES_K`
+
 ## 10) Run
 
 ```powershell
@@ -332,6 +378,9 @@ Files written to `outputs/`:
 - `all_spectra_logscale.png`
 - `parameters_vs_intensity.png`
 - `thermalized_power_diagnostics.png`
+- `mb_validity_limit.png`
+- `mb_validity_scan.csv`
+- `mb_validity_limits.csv`
 - `tsai_forward_stateT_to_pth.csv`
 - `tsai_inverse_pth_state_to_temperature.csv`
 - `tsai_du_dt_samples_at_experimental_state.csv`
@@ -346,6 +395,13 @@ Files written to `outputs/`:
 - uncertainty terms (`*_err_chi2_*`, `*_err_range_*`, `*_err_a0_*`, `*_err_total_*`),
 - flux and power channels in `W cm^-2` and `W cm^-3`,
 - closure diagnostics and normalized partition metrics.
+
+`mb_validity_scan.csv` contains, for each selected reference temperature and reduced QFLS value:
+- exact BE integrated flux (`integral_ipc_be`, `ln_integral_ipc_be`),
+- MB integrated flux (`integral_ipc_mb`, `ln_integral_ipc_mb`),
+- MB deviation metrics (`mb_relative_error`, `mb_log_deviation`, `mb_valid`).
+
+`mb_validity_limits.csv` reports the detected onset `x*` where MB relative error first exceeds the configured threshold.
 
 ## 12) Tsai Eq. 41 + Eq. 48 Workflow (Implemented)
 
@@ -448,5 +504,6 @@ This reduced the Tsai-vs-CWPL temperature error on the current dataset to approx
 
 - FD values are reported, but FD-specific uncertainty propagation is not yet implemented.
 - The model is a compact thermodynamic reconstruction, not a full microscopic transport solver.
+- The MB-validity diagnostic assumes a step absorber `A(E)=A0*Theta(E-Eg)` and a fixed `A0`; real spectral absorptivity structure is not included in this particular test.
 - Tsai Eq. (48) is integrated numerically over a finite `q` range (`TSAI_Q_MIN_CM1` to `TSAI_Q_MAX_CM1`), not analytically over `[0, inf)`.
 - `tau_LO` and screening choice are currently tuned against this dataset; for transfer to other materials/samples, re-tuning or independent calibration is recommended.

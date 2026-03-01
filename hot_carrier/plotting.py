@@ -8,11 +8,19 @@ import numpy as np
 import pandas as pd
 from matplotlib import cm
 from matplotlib.colors import LogNorm
+from matplotlib.lines import Line2D
 from matplotlib.ticker import AutoMinorLocator, LogLocator, NullFormatter
 from matplotlib.tri import Triangulation
 
 from .analysis import linearized_signal, _safe_log_yerr, _sanitize_nonnegative
-from .config import EG_EV, E_CHARGE, FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE, K_B, SAVE_DPI
+from .config import (
+    EG_EV,
+    E_CHARGE,
+    FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE,
+    K_B,
+    MB_VALIDITY_REL_ERROR_LIMIT,
+    SAVE_DPI,
+)
 from .models import FitResult
 
 if TYPE_CHECKING:
@@ -925,6 +933,207 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
 
     fig.suptitle(r"Thermalized-power diagnostics in carrier-state space", y=1.01)
     fig.tight_layout(pad=0.8)
+    save_figure(fig, outpath)
+    plt.close(fig)
+
+
+def plot_mb_validity_limit(
+    curves_df: pd.DataFrame,
+    limits_df: pd.DataFrame,
+    outpath: Path,
+    rel_error_limit: float = MB_VALIDITY_REL_ERROR_LIMIT,
+) -> None:
+    required_curve_cols = {
+        "temperature_k",
+        "reduced_qfls",
+        "ln_integral_ipc_be",
+        "ln_integral_ipc_mb",
+        "mb_relative_error",
+    }
+    if curves_df is None or curves_df.empty:
+        return
+    if not required_curve_cols.issubset(curves_df.columns):
+        return
+
+    df = curves_df.copy()
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["temperature_k", "reduced_qfls", "ln_integral_ipc_be", "ln_integral_ipc_mb"]
+    )
+    if df.shape[0] < 6:
+        return
+
+    temperatures_k = np.sort(df["temperature_k"].unique())
+    if temperatures_k.size == 0:
+        return
+
+    fig, (ax0, ax1) = plt.subplots(
+        2,
+        1,
+        figsize=(8.7, 6.9),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.8, 1.6], "hspace": 0.08},
+    )
+    colors = cm.viridis(np.linspace(0.15, 0.90, temperatures_k.size))
+
+    for color, temperature_k in zip(colors, temperatures_k, strict=True):
+        row = (
+            df[df["temperature_k"] == temperature_k]
+            .sort_values("reduced_qfls")
+            .reset_index(drop=True)
+        )
+        x = row["reduced_qfls"].to_numpy(dtype=float)
+        y_be = row["ln_integral_ipc_be"].to_numpy(dtype=float)
+        y_mb = row["ln_integral_ipc_mb"].to_numpy(dtype=float)
+        rel = row["mb_relative_error"].to_numpy(dtype=float)
+
+        ax0.plot(
+            x,
+            y_be,
+            color=color,
+            lw=1.8,
+            label=rf"BE, $T$={temperature_k:.0f} K",
+        )
+        ax0.plot(
+            x,
+            y_mb,
+            color=color,
+            lw=1.2,
+            ls="--",
+            alpha=0.92,
+        )
+        ax1.plot(
+            x,
+            rel,
+            color=color,
+            lw=1.5,
+            label=rf"$T$={temperature_k:.0f} K",
+        )
+
+        if (
+            limits_df is not None
+            and (not limits_df.empty)
+            and {"temperature_k", "x_limit"}.issubset(limits_df.columns)
+        ):
+            limit_row = limits_df[np.isclose(limits_df["temperature_k"], temperature_k)]
+            if not limit_row.empty:
+                x_limit = float(limit_row["x_limit"].iloc[0])
+                if np.isfinite(x_limit):
+                    y_limit = np.interp(x_limit, x, y_be, left=np.nan, right=np.nan)
+                    rel_limit = np.interp(x_limit, x, rel, left=np.nan, right=np.nan)
+                    if np.isfinite(y_limit):
+                        ax0.scatter(
+                            [x_limit],
+                            [y_limit],
+                            s=34,
+                            color=color,
+                            edgecolors="black",
+                            linewidths=0.5,
+                            zorder=4,
+                        )
+                    if np.isfinite(rel_limit):
+                        ax1.scatter(
+                            [x_limit],
+                            [rel_limit],
+                            s=30,
+                            color=color,
+                            edgecolors="black",
+                            linewidths=0.5,
+                            zorder=4,
+                        )
+
+    conservative_x = np.nan
+    if (
+        limits_df is not None
+        and (not limits_df.empty)
+        and ("x_limit_conservative" in limits_df.columns)
+    ):
+        conservative_x = float(limits_df["x_limit_conservative"].iloc[0])
+    if not np.isfinite(conservative_x) and (
+        limits_df is not None
+        and (not limits_df.empty)
+        and ("x_limit" in limits_df.columns)
+    ):
+        finite_limits = limits_df["x_limit"].to_numpy(dtype=float)
+        finite_limits = finite_limits[np.isfinite(finite_limits)]
+        if finite_limits.size > 0:
+            conservative_x = float(np.min(finite_limits))
+
+    x_all = df["reduced_qfls"].to_numpy(dtype=float)
+    x_left = float(np.nanmin(x_all))
+    x_right = float(np.nanmax(x_all))
+    if np.isfinite(conservative_x) and (x_right > conservative_x):
+        for ax in (ax0, ax1):
+            ax.axvspan(
+                conservative_x,
+                x_right,
+                facecolor="#ffebee",
+                alpha=0.45,
+                zorder=0,
+            )
+            ax.axvline(conservative_x, color="#b71c1c", lw=1.0, ls=":", alpha=0.9)
+        ax0.text(
+            0.03,
+            0.05,
+            rf"Non-MB side starts near $x^* \approx {conservative_x:.2f}$",
+            transform=ax0.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=8.8,
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "0.35",
+                "boxstyle": "square,pad=0.2",
+                "alpha": 0.92,
+            },
+        )
+
+    style_axes(ax0)
+    ax0.set_ylabel(r"$\ln\!\left(\int_{E_g}^{\infty} I_{\mathrm{PC}}(E)\,\mathrm{d}E\right)$")
+    ax0.set_title(
+        "Maxwell-Boltzmann validity limit from integrated generalized Planck law"
+    )
+    top_handles, top_labels = ax0.get_legend_handles_labels()
+    top_handles.append(Line2D([0], [0], color="0.25", lw=1.2, ls="--"))
+    top_labels.append("MB affine reference")
+    ax0.legend(top_handles, top_labels, loc="best", fontsize=8.6)
+
+    ax1.axhline(
+        rel_error_limit,
+        color="#b71c1c",
+        lw=1.2,
+        ls="--",
+        label=rf"MB error threshold = {100.0 * rel_error_limit:.1f}%",
+    )
+    style_axes(ax1, logy=True)
+    ax1.set_xlabel(r"Reduced QFLS, $(\Delta\mu - E_g)/(k_B T)$")
+    ax1.set_ylabel(r"$\Phi_{\mathrm{BE}}/\Phi_{\mathrm{MB}} - 1$")
+    ax1.set_title(r"Deviation from MB")
+    ax1.legend(loc="best", fontsize=8.6)
+    ax1.set_xlim(x_left, x_right)
+
+    if limits_df is not None and (not limits_df.empty):
+        lines: list[str] = []
+        for row in limits_df.itertuples(index=False):
+            if hasattr(row, "x_limit") and np.isfinite(row.x_limit):
+                lines.append(f"T={row.temperature_k:.0f} K: x*={row.x_limit:.2f}")
+        if lines:
+            ax1.text(
+                0.03,
+                0.04,
+                "\n".join(lines),
+                transform=ax1.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=8.5,
+                bbox={
+                    "facecolor": "white",
+                    "edgecolor": "0.35",
+                    "boxstyle": "square,pad=0.2",
+                    "alpha": 0.92,
+                },
+            )
+
+    fig.subplots_adjust(left=0.12, right=0.97, bottom=0.09, top=0.95, hspace=0.09)
     save_figure(fig, outpath)
     plt.close(fig)
 

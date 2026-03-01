@@ -9,6 +9,7 @@ from .config import (
     ABSORPTIVITY_AT_LASER,
     ABSORPTIVITY_AT_LASER_SIGMA,
     ACTIVE_LAYER_THICKNESS_NM,
+    ASSUMED_A0,
     A0_SIGMA,
     EG_EV,
     ESTIMATE_FIT_RANGE_UNCERTAINTY,
@@ -30,6 +31,11 @@ from .config import (
     M0,
     M_E_EFF,
     M_H_EFF,
+    MB_VALIDITY_REFERENCE_TEMPERATURES_K,
+    MB_VALIDITY_REL_ERROR_LIMIT,
+    MB_VALIDITY_X_MAX,
+    MB_VALIDITY_X_MIN,
+    MB_VALIDITY_X_POINTS,
     PLQY_ETA,
     PLQY_ETA_SIGMA,
     WINDOW_MIN_POINTS,
@@ -679,6 +685,240 @@ def _laser_photon_energy_from_wavelength(wavelength_nm: float) -> tuple[float, f
     energy_j = (H * C) / wavelength_m
     energy_ev = energy_j / E_CHARGE
     return float(energy_j), float(energy_ev)
+
+
+def _polylog23_series(
+    r: np.ndarray,
+    *,
+    rtol: float = 1e-12,
+    max_terms: int = 120000,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Evaluate Li_2(r) and Li_3(r) from power series for |r| < 1:
+      Li_s(r) = sum_{m=1..infinity} r^m / m^s.
+    """
+    r_arr = np.asarray(r, dtype=float)
+    li2 = np.full_like(r_arr, np.nan, dtype=float)
+    li3 = np.full_like(r_arr, np.nan, dtype=float)
+    valid = np.isfinite(r_arr) & (r_arr >= 0.0) & (r_arr < 1.0)
+    if not np.any(valid):
+        return li2, li3
+
+    r_valid = r_arr[valid]
+    power = r_valid.copy()
+    li2_valid = power.copy()
+    li3_valid = power.copy()
+
+    n = 1
+    while n < max_terms:
+        n += 1
+        power *= r_valid
+        inv_n = 1.0 / n
+        term2 = power * (inv_n**2)
+        term3 = term2 * inv_n
+        li2_valid += term2
+        li3_valid += term3
+        if np.all(
+            np.abs(term2) <= rtol * np.maximum(1.0, np.abs(li2_valid))
+        ) and np.all(
+            np.abs(term3) <= rtol * np.maximum(1.0, np.abs(li3_valid))
+        ):
+            break
+
+    li2[valid] = li2_valid
+    li3[valid] = li3_valid
+    return li2, li3
+
+
+def integrated_ipc_step_absorber_be(
+    temperature_k: float,
+    reduced_qfls: np.ndarray,
+    *,
+    eg_ev: float = EG_EV,
+    absorptivity_a0: float = ASSUMED_A0,
+) -> np.ndarray:
+    """
+    Exact GPL integral for A(E)=A0*Theta(E-Eg):
+      I_PC(E) = [2E^2/(h^3 c^2)] * A0 / (exp((E-Delta_mu)/(k_B T)) - 1)
+      Phi_BE = integral_{Eg..infinity} I_PC(E) dE
+
+    With x=(Delta_mu-Eg)/(k_B T), r=exp(x), and x<0:
+      Phi_BE = [2A0/(h^3 c^2)] *
+               [Eg^2(k_B T) Li_1(r) + 2Eg(k_B T)^2 Li_2(r) + 2(k_B T)^3 Li_3(r)].
+    """
+    x = np.asarray(reduced_qfls, dtype=float)
+    out = np.full_like(x, np.nan, dtype=float)
+    if (
+        (not np.isfinite(temperature_k))
+        or (temperature_k <= 0)
+        or (not np.isfinite(eg_ev))
+        or (eg_ev <= 0)
+        or (not np.isfinite(absorptivity_a0))
+        or (absorptivity_a0 <= 0)
+    ):
+        return out
+
+    valid = np.isfinite(x) & (x < 0.0)
+    if not np.any(valid):
+        return out
+
+    x_valid = x[valid]
+    r = np.exp(np.clip(x_valid, -700.0, -1e-12))
+    li1 = -np.log1p(-r)  # Li_1(r)
+    li2, li3 = _polylog23_series(r)
+    kbt = K_B * float(temperature_k)
+    eg_j = float(eg_ev) * E_CHARGE
+    prefactor = (2.0 * float(absorptivity_a0)) / (H**3 * C**2)
+    phi_be = prefactor * (
+        (eg_j**2) * kbt * li1
+        + 2.0 * eg_j * (kbt**2) * li2
+        + 2.0 * (kbt**3) * li3
+    )
+    out[valid] = phi_be
+    return out
+
+
+def integrated_ipc_step_absorber_mb(
+    temperature_k: float,
+    reduced_qfls: np.ndarray,
+    *,
+    eg_ev: float = EG_EV,
+    absorptivity_a0: float = ASSUMED_A0,
+) -> np.ndarray:
+    """
+    MB limit of the same integral (first Boltzmann term only):
+      Phi_MB = [2A0/(h^3 c^2)] * exp(x) *
+               [Eg^2(k_B T) + 2Eg(k_B T)^2 + 2(k_B T)^3],
+    where x=(Delta_mu-Eg)/(k_B T).
+    """
+    x = np.asarray(reduced_qfls, dtype=float)
+    out = np.full_like(x, np.nan, dtype=float)
+    if (
+        (not np.isfinite(temperature_k))
+        or (temperature_k <= 0)
+        or (not np.isfinite(eg_ev))
+        or (eg_ev <= 0)
+        or (not np.isfinite(absorptivity_a0))
+        or (absorptivity_a0 <= 0)
+    ):
+        return out
+
+    valid = np.isfinite(x)
+    if not np.any(valid):
+        return out
+
+    x_valid = x[valid]
+    kbt = K_B * float(temperature_k)
+    eg_j = float(eg_ev) * E_CHARGE
+    prefactor = (2.0 * float(absorptivity_a0)) / (H**3 * C**2)
+    phi_mb = prefactor * np.exp(np.clip(x_valid, -700.0, 700.0)) * (
+        (eg_j**2) * kbt + 2.0 * eg_j * (kbt**2) + 2.0 * (kbt**3)
+    )
+    out[valid] = phi_mb
+    return out
+
+
+def build_mb_validity_scan(
+    temperatures_k: np.ndarray,
+    *,
+    x_min: float = MB_VALIDITY_X_MIN,
+    x_max: float = MB_VALIDITY_X_MAX,
+    x_points: int = MB_VALIDITY_X_POINTS,
+    rel_error_limit: float = MB_VALIDITY_REL_ERROR_LIMIT,
+    eg_ev: float = EG_EV,
+    absorptivity_a0: float = ASSUMED_A0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build MB-validity curves:
+      y = ln[integral_{Eg..infinity} I_PC(E) dE] vs x=(Delta_mu-Eg)/(k_B T)
+    using exact BE photons and MB approximation.
+    """
+    temp_arr = np.asarray(temperatures_k, dtype=float)
+    temp_arr = temp_arr[np.isfinite(temp_arr) & (temp_arr > 0)]
+    if temp_arr.size == 0:
+        temp_arr = np.asarray(MB_VALIDITY_REFERENCE_TEMPERATURES_K, dtype=float)
+        temp_arr = temp_arr[np.isfinite(temp_arr) & (temp_arr > 0)]
+    if temp_arr.size == 0:
+        return pd.DataFrame(), pd.DataFrame()
+
+    x_lo = float(min(x_min, x_max))
+    x_hi = float(max(x_min, x_max))
+    x_hi = min(x_hi, -1e-6)
+    if x_lo >= x_hi:
+        x_lo, x_hi = -12.0, -0.05
+    x_grid = np.linspace(x_lo, x_hi, max(60, int(x_points)), dtype=float)
+
+    curve_frames: list[pd.DataFrame] = []
+    limit_records: list[dict[str, float | bool]] = []
+    unique_temps = np.unique(np.round(temp_arr, 6))
+
+    for temperature_k in unique_temps:
+        kbt_ev = (K_B * temperature_k) / E_CHARGE
+        delta_mu_ev = eg_ev + x_grid * kbt_ev
+        phi_be = integrated_ipc_step_absorber_be(
+            temperature_k=temperature_k,
+            reduced_qfls=x_grid,
+            eg_ev=eg_ev,
+            absorptivity_a0=absorptivity_a0,
+        )
+        phi_mb = integrated_ipc_step_absorber_mb(
+            temperature_k=temperature_k,
+            reduced_qfls=x_grid,
+            eg_ev=eg_ev,
+            absorptivity_a0=absorptivity_a0,
+        )
+
+        ln_phi_be = np.where(phi_be > 0, np.log(phi_be), np.nan)
+        ln_phi_mb = np.where(phi_mb > 0, np.log(phi_mb), np.nan)
+        rel_error = np.where(
+            (phi_be > 0) & (phi_mb > 0),
+            (phi_be / phi_mb) - 1.0,
+            np.nan,
+        )
+        log_deviation = ln_phi_be - ln_phi_mb
+        is_mb_valid = np.isfinite(rel_error) & (rel_error <= rel_error_limit)
+
+        curve_frames.append(
+            pd.DataFrame(
+                {
+                    "temperature_k": float(temperature_k),
+                    "reduced_qfls": x_grid,
+                    "delta_mu_ev": delta_mu_ev,
+                    "integral_ipc_be": phi_be,
+                    "integral_ipc_mb": phi_mb,
+                    "ln_integral_ipc_be": ln_phi_be,
+                    "ln_integral_ipc_mb": ln_phi_mb,
+                    "mb_relative_error": rel_error,
+                    "mb_log_deviation": log_deviation,
+                    "mb_valid": is_mb_valid,
+                }
+            )
+        )
+
+        invalid_idx = np.flatnonzero(
+            np.isfinite(rel_error) & (rel_error > rel_error_limit)
+        )
+        x_limit = float(x_grid[invalid_idx[0]]) if invalid_idx.size > 0 else np.nan
+        delta_mu_limit_ev = (
+            float(eg_ev + x_limit * kbt_ev) if np.isfinite(x_limit) else np.nan
+        )
+        limit_records.append(
+            {
+                "temperature_k": float(temperature_k),
+                "x_limit": x_limit,
+                "delta_mu_limit_ev": delta_mu_limit_ev,
+                "mb_relative_error_limit": float(rel_error_limit),
+                "mb_valid_over_entire_scan": bool(invalid_idx.size == 0),
+            }
+        )
+
+    curves_df = pd.concat(curve_frames, ignore_index=True)
+    limits_df = pd.DataFrame.from_records(limit_records)
+    finite_limits = limits_df["x_limit"].to_numpy(dtype=float)
+    finite_limits = finite_limits[np.isfinite(finite_limits)]
+    conservative_x = float(np.min(finite_limits)) if finite_limits.size > 0 else np.nan
+    limits_df["x_limit_conservative"] = conservative_x
+    return curves_df, limits_df
 
 
 def compute_power_balance_table(

@@ -5,7 +5,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .analysis import compute_power_balance_table, fit_single_spectrum, load_spectra
+from .analysis import (
+    build_mb_validity_scan,
+    compute_power_balance_table,
+    fit_single_spectrum,
+    load_spectra,
+)
 from .config import (
     ABSORPTIVITY_AT_LASER,
     ABSORPTIVITY_AT_LASER_SIGMA,
@@ -24,6 +29,9 @@ from .config import (
     FIT_RANGE_SCAN_MIN_R2,
     FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE,
     LASER_WAVELENGTH_NM,
+    MB_VALIDITY_ENABLE,
+    MB_VALIDITY_REFERENCE_TEMPERATURES_K,
+    MB_VALIDITY_REL_ERROR_LIMIT,
     PLQY_ETA,
     PLQY_ETA_SIGMA,
     TSAI_ENABLE_SIMULATION,
@@ -39,6 +47,7 @@ from .plotting import (
     plot_raw_spectra,
     plot_single_fit,
     plot_summary,
+    plot_mb_validity_limit,
     plot_thermalized_power_diagnostics,
     plot_tsai_temperature_rise_vs_pth_density,
     setup_plot_style,
@@ -110,12 +119,33 @@ def _fit_all_spectra(
     return all_results
 
 
+def _select_mb_validity_temperatures(results_df: pd.DataFrame) -> np.ndarray:
+    if "temperature_k" not in results_df.columns:
+        return np.asarray(MB_VALIDITY_REFERENCE_TEMPERATURES_K, dtype=float)
+
+    temperatures = results_df["temperature_k"].to_numpy(dtype=float)
+    temperatures = temperatures[np.isfinite(temperatures) & (temperatures > 0)]
+    if temperatures.size == 0:
+        return np.asarray(MB_VALIDITY_REFERENCE_TEMPERATURES_K, dtype=float)
+
+    if temperatures.size >= 3:
+        selected = np.quantile(temperatures, [0.1, 0.5, 0.9])
+    else:
+        selected = temperatures
+    selected = np.unique(np.round(selected.astype(float), 2))
+    if selected.size == 0:
+        selected = np.asarray(MB_VALIDITY_REFERENCE_TEMPERATURES_K, dtype=float)
+    return selected
+
+
 def _print_run_summary(
     out_dir: Path,
     fit_dir: Path,
     comparison_df: pd.DataFrame | None,
     tsai_model_df: pd.DataFrame | None,
     tsai_simulation_result: TsaiWorkflowResult | None,
+    mb_validity_curves_df: pd.DataFrame | None,
+    mb_validity_limits_df: pd.DataFrame | None,
 ) -> None:
     print("Done.")
     print(f"Raw spectra plot: {out_dir / 'all_spectra_logscale.png'}")
@@ -123,6 +153,12 @@ def _print_run_summary(
     print(f"Results table:    {out_dir / 'fit_results.csv'}")
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
     print(f"Power figure:     {out_dir / 'thermalized_power_diagnostics.png'}")
+    if mb_validity_curves_df is not None and mb_validity_limits_df is not None:
+        print(f"MB limit figure:  {out_dir / 'mb_validity_limit.png'}")
+        print(f"MB curves CSV:    {out_dir / 'mb_validity_scan.csv'}")
+        print(f"MB limits CSV:    {out_dir / 'mb_validity_limits.csv'}")
+    else:
+        print("MB limit figure:  skipped")
     if tsai_model_df is not None:
         print(f"Pth(n,T) figure:  {out_dir / 'pth_nT_comparison.png'}")
     else:
@@ -178,6 +214,16 @@ def _print_run_summary(
             "Tsai model table: "
             f"{TSAI_MODEL_TABLE_CSV} | points={tsai_model_df.shape[0]}"
         )
+    if mb_validity_limits_df is not None and (not mb_validity_limits_df.empty):
+        finite_limits = mb_validity_limits_df["x_limit"].to_numpy(dtype=float)
+        finite_limits = finite_limits[np.isfinite(finite_limits)]
+        if finite_limits.size > 0:
+            print(
+                "MB validity:     "
+                f"x*≈{np.min(finite_limits):.2f} for "
+                f"rel.error>{100.0 * MB_VALIDITY_REL_ERROR_LIMIT:.1f}%"
+            )
+
 
 
 def main() -> None:
@@ -250,6 +296,43 @@ def main() -> None:
     if legacy_power_plot.exists():
         legacy_power_plot.unlink()
     plot_thermalized_power_diagnostics(results_df, out_dir / "thermalized_power_diagnostics.png")
+    mb_validity_curves_df: pd.DataFrame | None = None
+    mb_validity_limits_df: pd.DataFrame | None = None
+    mb_limit_plot_path = out_dir / "mb_validity_limit.png"
+    mb_curve_csv_path = out_dir / "mb_validity_scan.csv"
+    mb_limit_csv_path = out_dir / "mb_validity_limits.csv"
+    if MB_VALIDITY_ENABLE:
+        mb_temperatures_k = _select_mb_validity_temperatures(results_df)
+        mb_validity_curves_df, mb_validity_limits_df = build_mb_validity_scan(
+            temperatures_k=mb_temperatures_k,
+            rel_error_limit=MB_VALIDITY_REL_ERROR_LIMIT,
+        )
+        if (mb_validity_curves_df is not None) and (not mb_validity_curves_df.empty):
+            mb_validity_curves_df.to_csv(mb_curve_csv_path, index=False)
+            if (mb_validity_limits_df is not None) and (not mb_validity_limits_df.empty):
+                mb_validity_limits_df.to_csv(mb_limit_csv_path, index=False)
+            plot_mb_validity_limit(
+                curves_df=mb_validity_curves_df,
+                limits_df=mb_validity_limits_df
+                if mb_validity_limits_df is not None
+                else pd.DataFrame(),
+                outpath=mb_limit_plot_path,
+                rel_error_limit=MB_VALIDITY_REL_ERROR_LIMIT,
+            )
+        else:
+            if mb_limit_plot_path.exists():
+                mb_limit_plot_path.unlink()
+            if mb_curve_csv_path.exists():
+                mb_curve_csv_path.unlink()
+            if mb_limit_csv_path.exists():
+                mb_limit_csv_path.unlink()
+    else:
+        if mb_limit_plot_path.exists():
+            mb_limit_plot_path.unlink()
+        if mb_curve_csv_path.exists():
+            mb_curve_csv_path.unlink()
+        if mb_limit_csv_path.exists():
+            mb_limit_csv_path.unlink()
     legacy_tsai_temp_comparison_plot = out_dir / "tsai_temperature_comparison.png"
     if legacy_tsai_temp_comparison_plot.exists():
         legacy_tsai_temp_comparison_plot.unlink()
@@ -272,4 +355,6 @@ def main() -> None:
         comparison_df=comparison_df,
         tsai_model_df=tsai_model_df,
         tsai_simulation_result=tsai_simulation_result,
+        mb_validity_curves_df=mb_validity_curves_df,
+        mb_validity_limits_df=mb_validity_limits_df,
     )

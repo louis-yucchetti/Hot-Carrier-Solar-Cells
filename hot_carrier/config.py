@@ -45,6 +45,15 @@ SAVE_DPI = 450
 # Nominal A0 used to convert Delta_mu_eff into Delta_mu.
 ASSUMED_A0 = 0.5 * (A0_HIGH_ENERGY_MIN + A0_HIGH_ENERGY_MAX)
 
+# Maxwell-Boltzmann validity diagnostic for the integrated GPL intensity.
+# Reduced QFLS variable: x = (Delta_mu - E_g) / (k_B T)  [dimensionless]
+MB_VALIDITY_ENABLE = True
+MB_VALIDITY_X_MIN = -12.0
+MB_VALIDITY_X_MAX = -0.05
+MB_VALIDITY_X_POINTS = 520
+MB_VALIDITY_REL_ERROR_LIMIT = 0.05
+MB_VALIDITY_REFERENCE_TEMPERATURES_K = np.array([300.0, 500.0, 700.0], dtype=float)
+
 # Laser/power-balance model inputs
 LASER_WAVELENGTH_NM = 532.0
 ABSORPTIVITY_AT_LASER = 0.625
