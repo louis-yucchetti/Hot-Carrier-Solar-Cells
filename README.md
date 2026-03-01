@@ -510,8 +510,49 @@ This reduced the Tsai-vs-CWPL temperature error on the current dataset to approx
 
 ## 14) Current Limitations
 
-- FD values are reported, but FD-specific uncertainty propagation is not yet implemented.
-- The model is a compact thermodynamic reconstruction, not a full microscopic transport solver.
-- The MB-validity diagnostic assumes a step absorber `A(E)=A0*Theta(E-Eg)` and a fixed `A0`; real spectral absorptivity structure is not included in this particular test.
-- Tsai Eq. (48) is integrated numerically over a finite `q` range (`TSAI_Q_MIN_CM1` to `TSAI_Q_MAX_CM1`), not analytically over `[0, inf)`.
-- `tau_LO` and screening choice are currently tuned against this dataset; for transfer to other materials/samples, re-tuning or independent calibration is recommended.
+### 14.1 Physics/model assumptions
+
+- The optical extraction uses a high-energy-tail linearization and assumes locally constant absorptivity (`A(E) ~ A0`) in the fitted window.
+- The MB-validity diagnostic uses a step absorber (`A(E)=A0*Theta(E-Eg)`), so realistic spectral structure of `A(E)` is not represented in that diagnostic.
+- The power model is intentionally compact (`E_nonrad = Eg + 3kBT`, `E_rad = Eg + kBT`) and does not include a full microscopic recombination/transport description.
+- The Tsai implementation uses the electron intraband cooling channel (Eq. 41 + Eq. 48) and is not a full coupled electron+hole nonequilibrium transport model.
+
+### 14.2 Parameterization and transferability limits
+
+- Several key inputs are fixed by configuration (for example `A0`, `Eg`, effective masses, `tau_LO`, screening mode), and are not jointly estimated from the PL data.
+- Current Tsai defaults were tuned on the present GaAs dataset; transfer to other samples/materials may require re-calibration.
+- By default, Tsai inversion in `(Delta_mu, P_th)` reconstructs `mu_e` via MB closure, which can become less reliable near degeneracy.
+
+### 14.3 Numerical/uncertainty limits
+
+- FD carrier quantities (`mu_e_fd_ev`, `mu_h_fd_ev`, `carrier_density_fd_cm3`) are reported, but FD-specific propagated uncertainties are not yet included.
+- Tsai-predicted temperatures currently do not carry propagated uncertainty bars from experimental and model parameters.
+- Tsai Eq. (48) is integrated over a finite `q` domain (`TSAI_Q_MIN_CM1` to `TSAI_Q_MAX_CM1`) and finite grid resolution.
+- Inverse Tsai mapping uses interpolation in `(primary axis, log10(P_th))` with nearest-neighbor fallback outside linear-interpolation coverage.
+
+### 14.4 Software/reproducibility limits
+
+- Configuration is file-based (`hot_carrier/config.py`) rather than a command-line/experiment-manifest interface.
+- The repository currently has no automated unit/regression test suite.
+- There is no built-in multi-dataset benchmark harness for systematic cross-sample validation.
+
+## 15) What Is Missing Right Now
+
+- A global inference mode that jointly fits spectra and calibrates uncertain physical parameters (`A0`, `tau_LO`, screening choice, etc.) with confidence intervals.
+- Full FD-consistent uncertainty propagation (including downstream Tsai comparison metrics).
+- A model-validation layer against independent observables (for example external carrier-density or temperature references).
+- A robust reproducibility package: saved run manifest (all config values), version hash, and automated regression checks.
+
+## 16) What Could Be Improved
+
+- Add a physically richer absorptivity treatment `A(E)` in both fitting and MB-validity analysis.
+- Add sensitivity analysis/uncertainty decomposition for `P_th` and Tsai outputs versus `A_laser`, PLQY, thickness, and material constants.
+- Add optional robust-fit alternatives (for example weighted/robust regression in the tail) and residual diagnostics for window quality control.
+- Add a unified calibration workflow for PLQY and absorptivity inputs with explicit validity-domain checks.
+- Expand to multi-sample/multi-material processing with shared reporting templates.
+
+## 17) Future Work (Suggested Roadmap)
+
+1. Short term: implement FD uncertainty propagation and Tsai temperature uncertainty propagation; add regression tests on current outputs.
+2. Mid term: add joint parameter estimation (or Bayesian inversion) for key model parameters and cross-validated transfer tests on additional datasets.
+3. Longer term: extend beyond the compact steady-state model toward richer carrier-transport/cooling physics and additional experimental constraints.
