@@ -1093,11 +1093,17 @@ def plot_tsai_temperature_rise_vs_pth_density(
     n_norm = LogNorm(vmin=float(np.min(n_all)), vmax=float(np.max(n_all)))
     cmap = cm.viridis
 
-    fig, ax = plt.subplots(figsize=(8.4, 5.6))
+    fig, (ax0, ax1) = plt.subplots(
+        2,
+        1,
+        figsize=(8.6, 6.8),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3.0, 1.5], "hspace": 0.08},
+    )
     for x, y0, y1 in zip(pth, dT_exp, dT_sim, strict=True):
-        ax.plot([x, x], [y0, y1], color="0.65", lw=0.8, alpha=0.35, zorder=1)
+        ax0.plot([x, x], [y0, y1], color="0.65", lw=0.8, alpha=0.35, zorder=1)
 
-    ax.scatter(
+    ax0.scatter(
         pth,
         dT_exp,
         c=n_exp,
@@ -1110,7 +1116,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
         label="Experimental",
         zorder=3,
     )
-    ax.scatter(
+    ax0.scatter(
         pth,
         dT_sim,
         c=n_sim,
@@ -1124,26 +1130,44 @@ def plot_tsai_temperature_rise_vs_pth_density(
         zorder=4,
     )
 
-    style_axes(ax, logx=True)
-    ax.set_xlabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
-    ax.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
-    ax.set_title(r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ colored by carrier density")
-    ax.legend(loc="best", fontsize=9)
+    style_axes(ax0, logx=True)
+    ax0.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
+    ax0.set_title(r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ colored by carrier density")
+    ax0.legend(loc="best", fontsize=9)
+
+    delta_t = dT_sim - dT_exp
+    ax1.axhline(0.0, color="0.25", lw=1.0, ls="--", zorder=1)
+    ax1.scatter(
+        pth,
+        delta_t,
+        c=n_exp,
+        cmap=cmap,
+        norm=n_norm,
+        s=48,
+        marker="o",
+        edgecolors="white",
+        linewidths=0.5,
+        zorder=3,
+    )
+    style_axes(ax1, logx=True)
+    ax1.set_xlabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+    ax1.set_ylabel(r"$\Delta T_{\mathrm{sim-exp}}$ (K)")
+    ax1.set_title(r"Residual diagnostic")
 
     sm = cm.ScalarMappable(norm=n_norm, cmap=cmap)
-    cbar = fig.colorbar(sm, ax=ax, pad=0.02, fraction=0.055)
+    cbar = fig.colorbar(sm, ax=[ax0, ax1], pad=0.02, fraction=0.045)
     cbar.set_label(r"Carrier density, $n$ (cm$^{-3}$)")
 
-    mae_rise = float(np.nanmean(np.abs(dT_sim - dT_exp)))
-    bias_rise = float(np.nanmean(dT_sim - dT_exp))
-    ax.text(
+    mae_rise = float(np.nanmean(np.abs(delta_t)))
+    bias_rise = float(np.nanmean(delta_t))
+    ax1.text(
         0.03,
-        0.97,
+        0.96,
         f"MAE(ΔT) = {mae_rise:.2f} K\nBias(ΔT) = {bias_rise:.2f} K",
-        transform=ax.transAxes,
+        transform=ax1.transAxes,
         ha="left",
         va="top",
-        fontsize=8.8,
+        fontsize=8.7,
         bbox={
             "facecolor": "white",
             "edgecolor": "0.35",
@@ -1152,6 +1176,6 @@ def plot_tsai_temperature_rise_vs_pth_density(
         },
     )
 
-    fig.tight_layout(pad=0.7)
+    fig.subplots_adjust(left=0.10, right=0.88, bottom=0.10, top=0.95, hspace=0.10)
     save_figure(fig, outpath)
     plt.close(fig)

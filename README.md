@@ -332,14 +332,13 @@ Files written to `outputs/`:
 - `all_spectra_logscale.png`
 - `parameters_vs_intensity.png`
 - `thermalized_power_diagnostics.png`
-- `pth_nT_comparison.png`
 - `tsai_forward_stateT_to_pth.csv`
 - `tsai_inverse_pth_state_to_temperature.csv`
 - `tsai_du_dt_samples_at_experimental_state.csv`
 - `tsai_temperature_comparison.csv`
-- `tsai_temperature_comparison.png`
 - `tsai_temperature_rise_vs_pth_density.png`
 - per-spectrum fit plots in `outputs/fits/`
+- optional `pth_nT_comparison.png` (only when `TSAI_MODEL_TABLE_CSV` is provided)
 - optional `pth_experiment_vs_tsai.csv`
 
 `fit_results.csv` includes:
@@ -412,6 +411,11 @@ Axes and encoding:
 - color: carrier density `n` (experimental and simulated, common log color scale),
 - markers: circles for experiment, triangles for Tsai simulation.
 
+Additional residual panel:
+- x-axis: `P_th` (`W cm^-3`, log scale),
+- y-axis: `T_sim - T_exp` (K) with a zero-reference line,
+- text box: `MAE(ΔT)` and `Bias(ΔT)`.
+
 Other Tsai outputs:
 - `outputs/tsai_temperature_comparison.csv` (`T_exp`, `T_sim`, errors, `n_exp`, `n_sim`),
 - `outputs/tsai_forward_stateT_to_pth.csv`,
@@ -438,7 +442,7 @@ This reduced the Tsai-vs-CWPL temperature error on the current dataset to approx
 2. Prepare a CSV file with columns `n_cm3`, `temperature_k`, `p_th_w_cm3`.
 3. Set `TSAI_MODEL_TABLE_CSV` in `hot_carrier/config.py`.
 4. Re-run the pipeline.
-5. Inspect the comparison plots and `outputs/pth_experiment_vs_tsai.csv`.
+5. Inspect `outputs/pth_nT_comparison.png` and `outputs/pth_experiment_vs_tsai.csv`.
 
 ## 14) Current Limitations
 

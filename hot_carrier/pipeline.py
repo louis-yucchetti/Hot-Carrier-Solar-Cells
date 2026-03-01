@@ -40,7 +40,6 @@ from .plotting import (
     plot_single_fit,
     plot_summary,
     plot_thermalized_power_diagnostics,
-    plot_tsai_temperature_comparison,
     plot_tsai_temperature_rise_vs_pth_density,
     setup_plot_style,
 )
@@ -124,9 +123,11 @@ def _print_run_summary(
     print(f"Results table:    {out_dir / 'fit_results.csv'}")
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
     print(f"Power figure:     {out_dir / 'thermalized_power_diagnostics.png'}")
-    print(f"Pth(n,T) figure:  {out_dir / 'pth_nT_comparison.png'}")
+    if tsai_model_df is not None:
+        print(f"Pth(n,T) figure:  {out_dir / 'pth_nT_comparison.png'}")
+    else:
+        print("Pth(n,T) figure:  skipped (no external Tsai model table)")
     if tsai_simulation_result is not None:
-        print(f"Tsai T-plot:      {out_dir / 'tsai_temperature_comparison.png'}")
         print(f"Tsai FOM plot:    {out_dir / 'tsai_temperature_rise_vs_pth_density.png'}")
     if comparison_df is not None:
         print(f"Tsai compare CSV: {out_dir / 'pth_experiment_vs_tsai.csv'}")
@@ -233,17 +234,25 @@ def main() -> None:
         eg_ev=EG_EV,
     )
     tsai_model_df = load_tsai_model_table(TSAI_MODEL_TABLE_CSV)
-    comparison_df = plot_pth_nt_comparison(
-        results_df=results_df,
-        outpath=out_dir / "pth_nT_comparison.png",
-        theory_df=tsai_model_df,
-    )
+    pth_nt_outpath = out_dir / "pth_nT_comparison.png"
+    comparison_df: pd.DataFrame | None = None
+    if tsai_model_df is not None:
+        comparison_df = plot_pth_nt_comparison(
+            results_df=results_df,
+            outpath=pth_nt_outpath,
+            theory_df=tsai_model_df,
+        )
+    elif pth_nt_outpath.exists():
+        pth_nt_outpath.unlink()
     results_df.to_csv(out_dir / "fit_results.csv", index=False)
     plot_summary(results_df, out_dir / "parameters_vs_intensity.png")
     legacy_power_plot = out_dir / "thermalized_power_vs_absorbed.png"
     if legacy_power_plot.exists():
         legacy_power_plot.unlink()
     plot_thermalized_power_diagnostics(results_df, out_dir / "thermalized_power_diagnostics.png")
+    legacy_tsai_temp_comparison_plot = out_dir / "tsai_temperature_comparison.png"
+    if legacy_tsai_temp_comparison_plot.exists():
+        legacy_tsai_temp_comparison_plot.unlink()
     tsai_simulation_result: TsaiWorkflowResult | None = None
     if TSAI_ENABLE_SIMULATION:
         tsai_simulation_result = run_tsai_temperature_workflow(
@@ -251,10 +260,6 @@ def main() -> None:
             out_dir=out_dir,
         )
         if tsai_simulation_result is not None:
-            plot_tsai_temperature_comparison(
-                tsai_result=tsai_simulation_result,
-                outpath=out_dir / "tsai_temperature_comparison.png",
-            )
             plot_tsai_temperature_rise_vs_pth_density(
                 tsai_result=tsai_simulation_result,
                 outpath=out_dir / "tsai_temperature_rise_vs_pth_density.png",
