@@ -60,6 +60,10 @@ ABSORPTIVITY_AT_LASER = 0.625
 ABSORPTIVITY_AT_LASER_SIGMA = 0.0
 PLQY_ETA = 0.0
 PLQY_ETA_SIGMA = 0.0
+# Optional PLQY table for intensity-dependent eta and eta uncertainty.
+# If provided and readable, this overrides constant PLQY_ETA/PLQY_ETA_SIGMA
+# in the power-balance stage.
+PLQY_RESULTS_CSV = "GaAs bulk_PLQY_results.csv"
 ACTIVE_LAYER_THICKNESS_NM = 950.0
 
 # Optional Tsai-model lookup table for direct experiment/theory comparison.

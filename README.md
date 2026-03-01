@@ -192,6 +192,8 @@ Using photoluminescence quantum yield (PLQY), `eta`:
 
 `phi_nonrad = (1 - eta) * phi_abs`
 
+In code, `eta` can be a single constant or a per-spectrum value loaded from `PLQY_RESULTS_CSV`.
+
 ### 5.2 Channel energies and thermalized power
 
 The implemented channel energies are:
@@ -340,8 +342,14 @@ These values should be set from your experiment:
 - `ABSORPTIVITY_AT_LASER_SIGMA`
 - `PLQY_ETA`
 - `PLQY_ETA_SIGMA`
+- `PLQY_RESULTS_CSV` (optional; per-condition PLQY table, overrides constant `PLQY_ETA`/`PLQY_ETA_SIGMA`)
 - `LASER_WAVELENGTH_NM`
 - `ACTIVE_LAYER_THICKNESS_NM`
+
+If `PLQY_RESULTS_CSV` is provided, the pipeline reads `PLQY` and uncertainty from file and maps it to each excitation condition (interpolation vs absorbed photon flux when available). For the current file `GaAs bulk_PLQY_results.csv`, columns used are:
+- `phiabs (photons/s)`
+- `PLQY (%)`
+- `err_PLQY (%)`
 
 For optional Tsai comparison, set `TSAI_MODEL_TABLE_CSV` to a comma-separated values (CSV) file with columns:
 - `n_cm3`

@@ -32,8 +32,11 @@ from .config import (
     MB_VALIDITY_ENABLE,
     MB_VALIDITY_REFERENCE_TEMPERATURES_K,
     MB_VALIDITY_REL_ERROR_LIMIT,
+    H,
+    C,
     PLQY_ETA,
     PLQY_ETA_SIGMA,
+    PLQY_RESULTS_CSV,
     TSAI_ENABLE_SIMULATION,
     TSAI_MODEL_TABLE_CSV,
     WINDOW_PEAK_OFFSET_EV,
@@ -138,6 +141,170 @@ def _select_mb_validity_temperatures(results_df: pd.DataFrame) -> np.ndarray:
     return selected
 
 
+def _normalize_column_name(name: str) -> str:
+    return "".join(ch for ch in str(name).strip().lower() if ch.isalnum())
+
+
+def _find_first_present_column(
+    columns: list[str],
+    candidates: tuple[str, ...],
+) -> str | None:
+    normalized = {_normalize_column_name(col): col for col in columns}
+    for candidate in candidates:
+        key = _normalize_column_name(candidate)
+        if key in normalized:
+            return normalized[key]
+    return None
+
+
+def _to_fraction(values: np.ndarray, column_name: str) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return arr
+    col_norm = _normalize_column_name(column_name)
+    if ("percent" in col_norm) or ("plqy" in col_norm and "%" in column_name):
+        return arr / 100.0
+    if np.nanmax(finite) > 1.0:
+        return arr / 100.0
+    return arr
+
+
+def _resolve_plqy_profiles(
+    root: Path,
+    intensities_w_cm2: np.ndarray,
+    laser_wavelength_nm: float,
+    absorptivity_at_laser: float,
+    default_eta: float,
+    default_eta_sigma: float,
+    plqy_csv: str,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    n_points = intensities_w_cm2.size
+    eta_default = np.full(n_points, float(default_eta), dtype=float)
+    sigma_default = np.full(n_points, float(default_eta_sigma), dtype=float)
+
+    csv_path_str = str(plqy_csv).strip()
+    if not csv_path_str:
+        return eta_default, sigma_default, "constant"
+
+    csv_path = Path(csv_path_str)
+    if not csv_path.is_absolute():
+        csv_path = root / csv_path
+    if not csv_path.is_file():
+        print(f"Warning: PLQY file not found, using constant PLQY: {csv_path}")
+        return eta_default, sigma_default, "constant"
+
+    table = pd.read_csv(csv_path)
+    if table.empty:
+        print(f"Warning: PLQY file is empty, using constant PLQY: {csv_path}")
+        return eta_default, sigma_default, "constant"
+
+    columns = list(table.columns.astype(str))
+    plqy_col = _find_first_present_column(columns, ("PLQY (%)", "PLQY", "eta"))
+    err_col = _find_first_present_column(
+        columns,
+        ("err_PLQY (%)", "PLQY_err (%)", "err_PLQY", "PLQY_err", "eta_err"),
+    )
+    phiabs_col = _find_first_present_column(
+        columns,
+        ("phiabs (photons/s)", "phiabs", "phi_abs_photons_s"),
+    )
+    intensity_col = _find_first_present_column(
+        columns,
+        ("intensity_w_cm2", "excitation_intensity_w_cm2", "i_exc_w_cm2"),
+    )
+
+    if plqy_col is None:
+        print(
+            f"Warning: PLQY column not found in {csv_path}; using constant PLQY."
+        )
+        return eta_default, sigma_default, "constant"
+
+    plqy_raw = pd.to_numeric(table[plqy_col], errors="coerce").to_numpy(dtype=float)
+    eta_table = _to_fraction(plqy_raw, plqy_col)
+    if err_col is None:
+        sigma_table = np.full_like(eta_table, float(default_eta_sigma), dtype=float)
+    else:
+        err_raw = pd.to_numeric(table[err_col], errors="coerce").to_numpy(dtype=float)
+        sigma_table = _to_fraction(err_raw, err_col)
+
+    eta_out = eta_default.copy()
+    sigma_out = sigma_default.copy()
+
+    if phiabs_col is not None:
+        phiabs_table = pd.to_numeric(table[phiabs_col], errors="coerce").to_numpy(dtype=float)
+        e_laser_j = (H * C) / (laser_wavelength_nm * 1e-9)
+        phiabs_target = (absorptivity_at_laser * intensities_w_cm2) / e_laser_j
+
+        valid = (
+            np.isfinite(phiabs_table)
+            & (phiabs_table > 0)
+            & np.isfinite(eta_table)
+            & np.isfinite(sigma_table)
+        )
+        if np.count_nonzero(valid) >= 2:
+            x = np.log10(phiabs_table[valid])
+            y_eta = eta_table[valid]
+            y_sigma = sigma_table[valid]
+            order = np.argsort(x)
+            x_sorted = x[order]
+            eta_sorted = y_eta[order]
+            sigma_sorted = y_sigma[order]
+            x_unique, unique_idx = np.unique(x_sorted, return_index=True)
+            eta_unique = eta_sorted[unique_idx]
+            sigma_unique = sigma_sorted[unique_idx]
+            x_target = np.log10(phiabs_target)
+            in_domain = (x_target >= np.min(x_unique)) & (x_target <= np.max(x_unique))
+            min_in_domain = max(2, int(0.30 * n_points))
+            if np.count_nonzero(in_domain) >= min_in_domain:
+                eta_out = np.interp(x_target, x_unique, eta_unique)
+                sigma_out = np.interp(x_target, x_unique, sigma_unique)
+                eta_out = np.clip(eta_out, 0.0, 1.0)
+                sigma_out = np.clip(sigma_out, 0.0, np.inf)
+                return eta_out, sigma_out, f"table:{csv_path.name} (interpolated vs phiabs)"
+            print(
+                "Warning: PLQY phiabs scale does not overlap experimental phi_abs; "
+                "skipping phiabs interpolation."
+            )
+
+    if intensity_col is not None:
+        intensity_table = pd.to_numeric(table[intensity_col], errors="coerce").to_numpy(dtype=float)
+        valid = (
+            np.isfinite(intensity_table)
+            & (intensity_table > 0)
+            & np.isfinite(eta_table)
+            & np.isfinite(sigma_table)
+        )
+        if np.count_nonzero(valid) >= 2:
+            x = np.log10(intensity_table[valid])
+            y_eta = eta_table[valid]
+            y_sigma = sigma_table[valid]
+            order = np.argsort(x)
+            x_sorted = x[order]
+            eta_sorted = y_eta[order]
+            sigma_sorted = y_sigma[order]
+            x_unique, unique_idx = np.unique(x_sorted, return_index=True)
+            eta_unique = eta_sorted[unique_idx]
+            sigma_unique = sigma_sorted[unique_idx]
+
+            eta_out = np.interp(np.log10(intensities_w_cm2), x_unique, eta_unique)
+            sigma_out = np.interp(np.log10(intensities_w_cm2), x_unique, sigma_unique)
+            eta_out = np.clip(eta_out, 0.0, 1.0)
+            sigma_out = np.clip(sigma_out, 0.0, np.inf)
+            return eta_out, sigma_out, f"table:{csv_path.name} (interpolated vs intensity)"
+
+    valid_rows = np.isfinite(eta_table) & np.isfinite(sigma_table)
+    if np.count_nonzero(valid_rows) == n_points:
+        eta_out = np.clip(eta_table, 0.0, 1.0)
+        sigma_out = np.clip(sigma_table, 0.0, np.inf)
+        return eta_out, sigma_out, f"table:{csv_path.name} (row-aligned)"
+
+    print(
+        f"Warning: Could not map PLQY table to excitation points; using constant PLQY."
+    )
+    return eta_default, sigma_default, "constant"
+
+
 def _print_run_summary(
     out_dir: Path,
     fit_dir: Path,
@@ -146,6 +313,9 @@ def _print_run_summary(
     tsai_simulation_result: TsaiWorkflowResult | None,
     mb_validity_curves_df: pd.DataFrame | None,
     mb_validity_limits_df: pd.DataFrame | None,
+    plqy_source: str,
+    plqy_eta_used: np.ndarray,
+    plqy_eta_sigma_used: np.ndarray,
 ) -> None:
     print("Done.")
     print(f"Raw spectra plot: {out_dir / 'all_spectra_logscale.png'}")
@@ -204,7 +374,9 @@ def _print_run_summary(
         "Power model:      "
         rf"lambda_laser={LASER_WAVELENGTH_NM:.1f} nm, "
         rf"A_laser={ABSORPTIVITY_AT_LASER:.4f}±{ABSORPTIVITY_AT_LASER_SIGMA:.4f}, "
-        rf"PLQY eta={PLQY_ETA:.4f}±{PLQY_ETA_SIGMA:.4f}, "
+        rf"PLQY source={plqy_source}, "
+        rf"eta=[{np.min(plqy_eta_used):.4f}, {np.max(plqy_eta_used):.4f}], "
+        rf"sigma=[{np.min(plqy_eta_sigma_used):.4f}, {np.max(plqy_eta_sigma_used):.4f}], "
         rf"d={ACTIVE_LAYER_THICKNESS_NM:.1f} nm"
     )
     if tsai_model_df is None:
@@ -268,14 +440,24 @@ def main() -> None:
         fit_dir=fit_dir,
     )
 
+    plqy_eta_profile, plqy_eta_sigma_profile, plqy_source = _resolve_plqy_profiles(
+        root=root,
+        intensities_w_cm2=EXCITATION_INTENSITY_W_CM2,
+        laser_wavelength_nm=LASER_WAVELENGTH_NM,
+        absorptivity_at_laser=ABSORPTIVITY_AT_LASER,
+        default_eta=PLQY_ETA,
+        default_eta_sigma=PLQY_ETA_SIGMA,
+        plqy_csv=PLQY_RESULTS_CSV,
+    )
+
     results_df = pd.DataFrame([r.__dict__ for r in all_results])
     results_df = compute_power_balance_table(
         results_df=results_df,
         laser_wavelength_nm=LASER_WAVELENGTH_NM,
         absorptivity_at_laser=ABSORPTIVITY_AT_LASER,
         absorptivity_at_laser_sigma=ABSORPTIVITY_AT_LASER_SIGMA,
-        plqy_eta=PLQY_ETA,
-        plqy_eta_sigma=PLQY_ETA_SIGMA,
+        plqy_eta=plqy_eta_profile,
+        plqy_eta_sigma=plqy_eta_sigma_profile,
         active_layer_thickness_nm=ACTIVE_LAYER_THICKNESS_NM,
         eg_ev=EG_EV,
     )
@@ -357,4 +539,7 @@ def main() -> None:
         tsai_simulation_result=tsai_simulation_result,
         mb_validity_curves_df=mb_validity_curves_df,
         mb_validity_limits_df=mb_validity_limits_df,
+        plqy_source=plqy_source,
+        plqy_eta_used=plqy_eta_profile,
+        plqy_eta_sigma_used=plqy_eta_sigma_profile,
     )

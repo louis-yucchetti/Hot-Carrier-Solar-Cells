@@ -687,6 +687,22 @@ def _laser_photon_energy_from_wavelength(wavelength_nm: float) -> tuple[float, f
     return float(energy_j), float(energy_ev)
 
 
+def _broadcast_parameter_vector(
+    value: float | np.ndarray,
+    size: int,
+    parameter_name: str,
+) -> np.ndarray:
+    arr = np.asarray(value, dtype=float)
+    if arr.ndim == 0:
+        return np.full(size, float(arr), dtype=float)
+    arr = arr.ravel()
+    if arr.size != size:
+        raise ValueError(
+            f"{parameter_name} must be scalar or length {size}, got length {arr.size}."
+        )
+    return arr.astype(float)
+
+
 def _polylog23_series(
     r: np.ndarray,
     *,
@@ -926,8 +942,8 @@ def compute_power_balance_table(
     laser_wavelength_nm: float = LASER_WAVELENGTH_NM,
     absorptivity_at_laser: float = ABSORPTIVITY_AT_LASER,
     absorptivity_at_laser_sigma: float = ABSORPTIVITY_AT_LASER_SIGMA,
-    plqy_eta: float = PLQY_ETA,
-    plqy_eta_sigma: float = PLQY_ETA_SIGMA,
+    plqy_eta: float | np.ndarray = PLQY_ETA,
+    plqy_eta_sigma: float | np.ndarray = PLQY_ETA_SIGMA,
     active_layer_thickness_nm: float = ACTIVE_LAYER_THICKNESS_NM,
     eg_ev: float = EG_EV,
 ) -> pd.DataFrame:
@@ -944,6 +960,22 @@ def compute_power_balance_table(
     """
     df = results_df.copy()
     p_exc_w_cm2 = df["intensity_w_cm2"].to_numpy(dtype=float)
+    n_rows = p_exc_w_cm2.size
+    plqy_eta_arr = _broadcast_parameter_vector(
+        value=plqy_eta,
+        size=n_rows,
+        parameter_name="plqy_eta",
+    )
+    plqy_eta_sigma_arr = _broadcast_parameter_vector(
+        value=plqy_eta_sigma,
+        size=n_rows,
+        parameter_name="plqy_eta_sigma",
+    )
+    if np.any((~np.isfinite(plqy_eta_arr)) | (plqy_eta_arr < 0) | (plqy_eta_arr > 1)):
+        raise ValueError("plqy_eta values must be finite and within [0, 1].")
+    if np.any((~np.isfinite(plqy_eta_sigma_arr)) | (plqy_eta_sigma_arr < 0)):
+        raise ValueError("plqy_eta_sigma values must be finite and non-negative.")
+
     temperature_k = df["temperature_k"].to_numpy(dtype=float)
     temperature_err_k = _sanitize_nonnegative(
         df["temperature_err_total_k"].to_numpy(dtype=float)
@@ -964,27 +996,27 @@ def compute_power_balance_table(
 
     phi_abs_cm2_s = p_abs_w_cm2 / e_laser_j
     phi_abs_err_cm2_s = np.abs(p_exc_w_cm2 / e_laser_j) * absorptivity_at_laser_sigma
-    phi_rad_cm2_s = plqy_eta * phi_abs_cm2_s
-    phi_nonrad_cm2_s = (1.0 - plqy_eta) * phi_abs_cm2_s
+    phi_rad_cm2_s = plqy_eta_arr * phi_abs_cm2_s
+    phi_nonrad_cm2_s = (1.0 - plqy_eta_arr) * phi_abs_cm2_s
 
-    d_phi_rad_d_a = plqy_eta * p_exc_w_cm2 / e_laser_j
+    d_phi_rad_d_a = plqy_eta_arr * p_exc_w_cm2 / e_laser_j
     d_phi_rad_d_eta = phi_abs_cm2_s
     phi_rad_err_cm2_s = np.sqrt(
         (d_phi_rad_d_a * absorptivity_at_laser_sigma) ** 2
-        + (d_phi_rad_d_eta * plqy_eta_sigma) ** 2
+        + (d_phi_rad_d_eta * plqy_eta_sigma_arr) ** 2
     )
 
-    d_phi_nonrad_d_a = (1.0 - plqy_eta) * p_exc_w_cm2 / e_laser_j
+    d_phi_nonrad_d_a = (1.0 - plqy_eta_arr) * p_exc_w_cm2 / e_laser_j
     d_phi_nonrad_d_eta = -phi_abs_cm2_s
     phi_nonrad_err_cm2_s = np.sqrt(
         (d_phi_nonrad_d_a * absorptivity_at_laser_sigma) ** 2
-        + (d_phi_nonrad_d_eta * plqy_eta_sigma) ** 2
+        + (d_phi_nonrad_d_eta * plqy_eta_sigma_arr) ** 2
     )
 
     valid_temperature = np.isfinite(temperature_k) & (temperature_k > 0)
     beta_j = np.where(
         valid_temperature,
-        eg_j + (3.0 - 2.0 * plqy_eta) * K_B * temperature_k,
+        eg_j + (3.0 - 2.0 * plqy_eta_arr) * K_B * temperature_k,
         np.nan,
     )
     e_nonrad_j = np.where(valid_temperature, eg_j + 3.0 * K_B * temperature_k, np.nan)
@@ -1005,15 +1037,19 @@ def compute_power_balance_table(
     cooling_factor = np.where(valid_temperature, 1.0 - beta_j / e_laser_j, np.nan)
 
     d_p_rec_d_a = np.where(valid_temperature, p_exc_w_cm2 * beta_j / e_laser_j, np.nan)
-    d_p_rec_d_eta = np.where(valid_temperature, prefactor * (-2.0 * K_B * temperature_k), np.nan)
+    d_p_rec_d_eta = np.where(
+        valid_temperature,
+        prefactor * (-2.0 * K_B * temperature_k),
+        np.nan,
+    )
     d_p_rec_d_t = np.where(
         valid_temperature,
-        prefactor * (3.0 - 2.0 * plqy_eta) * K_B,
+        prefactor * (3.0 - 2.0 * plqy_eta_arr) * K_B,
         np.nan,
     )
     p_rec_err_w_cm2 = np.sqrt(
         (d_p_rec_d_a * absorptivity_at_laser_sigma) ** 2
-        + (d_p_rec_d_eta * plqy_eta_sigma) ** 2
+        + (d_p_rec_d_eta * plqy_eta_sigma_arr) ** 2
         + (d_p_rec_d_t * temperature_err_k) ** 2
     )
 
@@ -1021,12 +1057,12 @@ def compute_power_balance_table(
     d_p_th_d_eta = np.where(valid_temperature, prefactor * (2.0 * K_B * temperature_k), np.nan)
     d_p_th_d_t = np.where(
         valid_temperature,
-        -prefactor * (3.0 - 2.0 * plqy_eta) * K_B,
+        -prefactor * (3.0 - 2.0 * plqy_eta_arr) * K_B,
         np.nan,
     )
     p_th_err_w_cm2 = np.sqrt(
         (d_p_th_d_a * absorptivity_at_laser_sigma) ** 2
-        + (d_p_th_d_eta * plqy_eta_sigma) ** 2
+        + (d_p_th_d_eta * plqy_eta_sigma_arr) ** 2
         + (d_p_th_d_t * temperature_err_k) ** 2
     )
 
@@ -1068,8 +1104,8 @@ def compute_power_balance_table(
             "laser_photon_energy_ev": float(e_laser_ev),
             "absorptivity_at_laser": float(absorptivity_at_laser),
             "absorptivity_at_laser_sigma": float(absorptivity_at_laser_sigma),
-            "plqy_eta": float(plqy_eta),
-            "plqy_eta_sigma": float(plqy_eta_sigma),
+            "plqy_eta": plqy_eta_arr,
+            "plqy_eta_sigma": plqy_eta_sigma_arr,
             "active_layer_thickness_nm": float(active_layer_thickness_nm),
             "active_layer_thickness_cm": float(thickness_cm),
             "absorbed_power_w_cm2": p_abs_w_cm2,

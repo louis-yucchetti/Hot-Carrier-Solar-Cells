@@ -909,19 +909,44 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         zorder=2,
     )
     e_laser_ev = float(results_df["laser_photon_energy_ev"].to_numpy(dtype=float)[0])
-    eta = float(results_df["plqy_eta"].to_numpy(dtype=float)[0])
+    eta_values = results_df["plqy_eta"].to_numpy(dtype=float)
+    eta_finite = eta_values[np.isfinite(eta_values)]
+    if eta_finite.size == 0:
+        eta_finite = np.array([0.0], dtype=float)
+    eta_min = float(np.min(eta_finite))
+    eta_max = float(np.max(eta_finite))
     t_line = np.linspace(float(np.min(t_plot)) * 0.98, float(np.max(t_plot)) * 1.02, 160)
-    delta_e_line = e_laser_ev - (
-        EG_EV + (3.0 - 2.0 * eta) * (K_B / E_CHARGE) * t_line
-    )
-    ax11.plot(
-        t_line,
-        delta_e_line,
-        "--",
-        lw=1.2,
-        color="0.2",
-        label=r"$E_{laser}-(E_g+(3-2\eta)k_BT)$",
-    )
+    if abs(eta_max - eta_min) < 1e-9:
+        delta_e_line = e_laser_ev - (
+            EG_EV + (3.0 - 2.0 * eta_min) * (K_B / E_CHARGE) * t_line
+        )
+        ax11.plot(
+            t_line,
+            delta_e_line,
+            "--",
+            lw=1.2,
+            color="0.2",
+            label=r"$E_{laser}-(E_g+(3-2\eta)k_BT)$",
+        )
+    else:
+        delta_e_lo = e_laser_ev - (
+            EG_EV + (3.0 - 2.0 * eta_min) * (K_B / E_CHARGE) * t_line
+        )
+        delta_e_hi = e_laser_ev - (
+            EG_EV + (3.0 - 2.0 * eta_max) * (K_B / E_CHARGE) * t_line
+        )
+        lo = np.minimum(delta_e_lo, delta_e_hi)
+        hi = np.maximum(delta_e_lo, delta_e_hi)
+        ax11.fill_between(
+            t_line,
+            lo,
+            hi,
+            color="0.25",
+            alpha=0.15,
+            label=rf"Model envelope ($\eta \in [{eta_min:.3f}, {eta_max:.3f}]$)",
+        )
+        ax11.plot(t_line, lo, "--", lw=1.0, color="0.25", alpha=0.9)
+        ax11.plot(t_line, hi, "--", lw=1.0, color="0.25", alpha=0.9)
     style_axes(ax11)
     ax11.set_xlabel("Carrier temperature, $T$ (K)")
     ax11.set_ylabel(r"Thermalized energy per pair (eV)")
