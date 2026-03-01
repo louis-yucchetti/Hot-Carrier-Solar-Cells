@@ -26,6 +26,7 @@ from .config import (
     LASER_WAVELENGTH_NM,
     PLQY_ETA,
     PLQY_ETA_SIGMA,
+    TSAI_ENABLE_SIMULATION,
     TSAI_MODEL_TABLE_CSV,
     WINDOW_PEAK_OFFSET_EV,
     WINDOW_SEARCH_MAX_EV,
@@ -39,8 +40,10 @@ from .plotting import (
     plot_single_fit,
     plot_summary,
     plot_thermalized_power_diagnostics,
+    plot_tsai_temperature_comparison,
     setup_plot_style,
 )
+from .tsai_model import TsaiWorkflowResult, run_tsai_temperature_workflow
 
 
 def _validate_configuration() -> None:
@@ -112,6 +115,7 @@ def _print_run_summary(
     fit_dir: Path,
     comparison_df: pd.DataFrame | None,
     tsai_model_df: pd.DataFrame | None,
+    tsai_simulation_result: TsaiWorkflowResult | None,
 ) -> None:
     print("Done.")
     print(f"Raw spectra plot: {out_dir / 'all_spectra_logscale.png'}")
@@ -120,8 +124,18 @@ def _print_run_summary(
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
     print(f"Power figure:     {out_dir / 'thermalized_power_diagnostics.png'}")
     print(f"Pth(n,T) figure:  {out_dir / 'pth_nT_comparison.png'}")
+    if tsai_simulation_result is not None:
+        print(f"Tsai T-plot:      {out_dir / 'tsai_temperature_comparison.png'}")
     if comparison_df is not None:
         print(f"Tsai compare CSV: {out_dir / 'pth_experiment_vs_tsai.csv'}")
+    if tsai_simulation_result is not None:
+        print(f"Tsai forward CSV: {out_dir / 'tsai_forward_muT_to_pth.csv'}")
+        print(f"Tsai inverse CSV: {out_dir / 'tsai_inverse_pth_mu_to_temperature.csv'}")
+        print(f"Tsai T-CSV:       {out_dir / 'tsai_temperature_comparison.csv'}")
+        print(
+            "Tsai model run:   Eq.41 + Eq.48 | "
+            f"forward grid points={tsai_simulation_result.forward_table_df.shape[0]}"
+        )
     if AUTO_SELECT_FIT_WINDOW:
         print(
             "Fit window mode:  AUTO per spectrum | "
@@ -227,6 +241,17 @@ def main() -> None:
     if legacy_power_plot.exists():
         legacy_power_plot.unlink()
     plot_thermalized_power_diagnostics(results_df, out_dir / "thermalized_power_diagnostics.png")
+    tsai_simulation_result: TsaiWorkflowResult | None = None
+    if TSAI_ENABLE_SIMULATION:
+        tsai_simulation_result = run_tsai_temperature_workflow(
+            results_df=results_df,
+            out_dir=out_dir,
+        )
+        if tsai_simulation_result is not None:
+            plot_tsai_temperature_comparison(
+                tsai_result=tsai_simulation_result,
+                outpath=out_dir / "tsai_temperature_comparison.png",
+            )
     if comparison_df is not None:
         comparison_df.to_csv(out_dir / "pth_experiment_vs_tsai.csv", index=False)
     _print_run_summary(
@@ -234,4 +259,5 @@ def main() -> None:
         fit_dir=fit_dir,
         comparison_df=comparison_df,
         tsai_model_df=tsai_model_df,
+        tsai_simulation_result=tsai_simulation_result,
     )

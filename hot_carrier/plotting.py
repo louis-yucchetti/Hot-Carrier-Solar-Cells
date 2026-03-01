@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,6 +14,9 @@ from matplotlib.tri import Triangulation
 from .analysis import linearized_signal, _safe_log_yerr, _sanitize_nonnegative
 from .config import EG_EV, E_CHARGE, FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE, K_B, SAVE_DPI
 from .models import FitResult
+
+if TYPE_CHECKING:
+    from .tsai_model import TsaiWorkflowResult
 
 
 def setup_plot_style() -> None:
@@ -921,5 +925,117 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
 
     fig.suptitle(r"Thermalized-power diagnostics in carrier-state space", y=1.01)
     fig.tight_layout(pad=0.8)
+    save_figure(fig, outpath)
+    plt.close(fig)
+
+
+def plot_tsai_temperature_comparison(
+    tsai_result: "TsaiWorkflowResult",
+    outpath: Path,
+) -> None:
+    inverse_df = tsai_result.inverse_table_df.copy()
+    inverse_df = inverse_df.replace([np.inf, -np.inf], np.nan).dropna()
+    inverse_df = inverse_df[
+        (inverse_df["p_th_w_cm3"] > 0)
+        & (inverse_df["temperature_k"] > 0)
+    ]
+    exp_df = tsai_result.experimental_prediction_df.copy()
+    exp_df = exp_df.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["mu_e_ev", "p_th_exp_w_cm3", "temperature_k_exp", "temperature_sim_k"]
+    )
+    exp_df = exp_df[
+        (exp_df["p_th_exp_w_cm3"] > 0)
+        & (exp_df["temperature_k_exp"] > 0)
+        & (exp_df["temperature_sim_k"] > 0)
+    ]
+    if (inverse_df.shape[0] < 4) or (exp_df.shape[0] < 2):
+        return
+
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11.6, 4.9))
+
+    tri = Triangulation(
+        inverse_df["mu_e_ev"].to_numpy(dtype=float),
+        np.log10(inverse_df["p_th_w_cm3"].to_numpy(dtype=float)),
+    )
+    temp_vals = inverse_df["temperature_k"].to_numpy(dtype=float)
+    level_min = float(np.nanmin(temp_vals))
+    level_max = float(np.nanmax(temp_vals))
+    if level_max <= level_min:
+        level_max = level_min + 1.0
+    levels = np.linspace(level_min, level_max, 22)
+    contour = ax0.tricontourf(
+        tri,
+        temp_vals,
+        levels=levels,
+        cmap="viridis",
+    )
+    ax0.scatter(
+        exp_df["mu_e_ev"],
+        exp_df["p_th_exp_w_cm3"],
+        s=54,
+        facecolors="none",
+        edgecolors="white",
+        linewidths=1.0,
+        zorder=3,
+        label="Experimental (mu_e, P_th)",
+    )
+    ax0.scatter(
+        exp_df["mu_e_ev"],
+        exp_df["p_th_exp_w_cm3"],
+        s=16,
+        c="k",
+        alpha=0.75,
+        zorder=4,
+    )
+    style_axes(ax0, logy=True)
+    ax0.set_xlabel(r"Electron chemical potential, $\mu_e$ (eV)")
+    ax0.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+    ax0.set_title(r"Simulated $T(P_{\mathrm{th}},\mu_e)$ with experimental points")
+    ax0.legend(loc="best", fontsize=8.5)
+    cbar0 = fig.colorbar(contour, ax=ax0, pad=0.02, fraction=0.055)
+    cbar0.set_label("Simulated temperature (K)")
+
+    t_exp = exp_df["temperature_k_exp"].to_numpy(dtype=float)
+    t_sim = exp_df["temperature_sim_k"].to_numpy(dtype=float)
+    mu_for_color = exp_df["mu_e_ev"].to_numpy(dtype=float)
+    ax1.scatter(
+        t_exp,
+        t_sim,
+        c=mu_for_color,
+        cmap="cividis",
+        s=56,
+        edgecolors="white",
+        linewidths=0.55,
+        zorder=3,
+    )
+    lo = float(min(np.nanmin(t_exp), np.nanmin(t_sim)))
+    hi = float(max(np.nanmax(t_exp), np.nanmax(t_sim)))
+    parity = np.linspace(lo * 0.95, hi * 1.05, 180)
+    ax1.plot(parity, parity, "--", color="0.2", lw=1.1, label="1:1 line")
+    style_axes(ax1)
+    ax1.set_xlabel(r"Experimental temperature, $T_{\mathrm{exp}}$ (K)")
+    ax1.set_ylabel(r"Simulated temperature, $T_{\mathrm{sim}}$ (K)")
+    ax1.set_title(r"Pointwise $T_{\mathrm{sim}}(P_{\mathrm{th}},\mu_e)$ vs $T_{\mathrm{exp}}$")
+    ax1.legend(loc="best", fontsize=8.5)
+    mae_k = float(np.nanmean(np.abs(t_sim - t_exp)))
+    bias_k = float(np.nanmean(t_sim - t_exp))
+    ax1.text(
+        0.03,
+        0.97,
+        f"MAE = {mae_k:.2f} K\nBias = {bias_k:.2f} K",
+        transform=ax1.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8.8,
+        bbox={
+            "facecolor": "white",
+            "edgecolor": "0.35",
+            "boxstyle": "square,pad=0.2",
+            "alpha": 0.92,
+        },
+    )
+
+    fig.suptitle("Tsai-model temperature inversion against experiment", y=1.02)
+    fig.tight_layout(pad=0.7)
     save_figure(fig, outpath)
     plt.close(fig)

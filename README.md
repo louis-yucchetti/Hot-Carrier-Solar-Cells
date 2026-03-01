@@ -277,7 +277,11 @@ Analytic derivatives are implemented in `compute_power_balance_table()`.
 8. Compute and combine uncertainty components.
 9. Compute power-balance quantities and uncertainties.
 10. Export tables and diagnostic figures.
-11. Optionally generate Tsai-model comparison outputs.
+11. Optionally overlay a user-provided Tsai lookup table (`TSAI_MODEL_TABLE_CSV`).
+12. Run Tsai Eq. 41 + Eq. 48 electron-cooling simulation:
+    - forward map `(mu_e, T) -> (du/dt)_intra -> P_th`,
+    - inverse map `(P_th, mu_e) -> T`,
+    - evaluate simulated `T` at experimental `(P_th, mu_e)` points.
 
 ## 8) Repository Structure
 
@@ -285,6 +289,7 @@ Analytic derivatives are implemented in `compute_power_balance_table()`.
 - `hot_carrier/config.py`: settings and constants.
 - `hot_carrier/models.py`: data classes and result assembly.
 - `hot_carrier/analysis.py`: fitting, uncertainty propagation, and power-balance calculations.
+- `hot_carrier/tsai_model.py`: Tsai Eq. 41 / Eq. 48 solver, inversion tables, and experimental evaluation.
 - `hot_carrier/plotting.py`: figure generation and comparison plots.
 - `hot_carrier/pipeline.py`: end-to-end orchestration.
 
@@ -303,6 +308,16 @@ For optional Tsai comparison, set `TSAI_MODEL_TABLE_CSV` to a comma-separated va
 - `temperature_k`
 - `p_th_w_cm3`
 
+For the built-in Tsai Eq. 41/Eq. 48 workflow, key controls are in `hot_carrier/config.py`:
+- `TSAI_ENABLE_SIMULATION`
+- `TSAI_LATTICE_TEMPERATURE_K`
+- `TSAI_LO_PHONON_ENERGY_EV`
+- `TSAI_LO_PHONON_LIFETIME_PS`
+- `TSAI_EPSILON_INF`, `TSAI_EPSILON_STATIC`
+- `TSAI_USE_STATIC_SCREENING`, `TSAI_SCREENING_MODEL`
+- `TSAI_Q_MIN_CM1`, `TSAI_Q_MAX_CM1`, `TSAI_Q_POINTS`
+- `TSAI_MU_E_GRID_*`, `TSAI_T_GRID_*`, `TSAI_PTH_INVERSE_POINTS`
+
 ## 10) Run
 
 ```powershell
@@ -317,6 +332,11 @@ Files written to `outputs/`:
 - `parameters_vs_intensity.png`
 - `thermalized_power_diagnostics.png`
 - `pth_nT_comparison.png`
+- `tsai_forward_muT_to_pth.csv`
+- `tsai_inverse_pth_mu_to_temperature.csv`
+- `tsai_du_dt_samples_at_experimental_muT.csv`
+- `tsai_temperature_comparison.csv`
+- `tsai_temperature_comparison.png`
 - per-spectrum fit plots in `outputs/fits/`
 - optional `pth_experiment_vs_tsai.csv`
 
@@ -326,7 +346,65 @@ Files written to `outputs/`:
 - flux and power channels in `W cm^-2` and `W cm^-3`,
 - closure diagnostics and normalized partition metrics.
 
-## 12) Optional Tsai-Model Comparison Workflow
+## 12) Tsai Eq. 41 + Eq. 48 Workflow (Implemented)
+
+This repository now includes a direct Tsai-model simulation workflow for intraband cooling with electron contribution only.
+
+### 12.1 Forward model: `(mu_e, T) -> (du/dt)_intra`
+
+The implementation follows Tsai 2018 Eq. (41) and Eq. (48):
+
+`1/tau_{c-LO}^q = [m_c^2 k_B T_c |M_screen^q|^2 V_c / (pi hbar^5 q)] * ln[(exp(eta_c - eps_min + eps_LO)+1)/(exp(eta_c - eps_min)+1)]`
+
+`(du/dt)_intra = -(1/(2 pi^2)) * integral dq q^2 (hbar omega_LO) * [N_q(T_c)-N_q(T_L)] / [tau_{c-LO}^q + tau_LO]`
+
+with:
+- `eta_c = mu_c/(k_B T_c)` and `mu_c = mu_e - E_g/2` (conduction-band-referenced electron chemical potential),
+- `eps_LO = hbar omega_LO/(k_B T_c)`,
+- `eps_min = hbar^2 k_min^2/(2 m_c k_B T_c)`,
+- `k_min = q/2 + m_c omega_LO/(hbar q)`,
+- `N_q(T) = 1/(exp(hbar omega_LO/(k_B T)) - 1)`.
+
+The screened Fröhlich matrix element uses Eq. (34), Eq. (35), Eq. (37), and Eq. (38):
+- static Thomas-Fermi screening factor `1/(1 + q_s^2/q^2)^2`,
+- `q_s^2 = e^2/(eps_0 K_s) * (dn/dmu)`, where `dn/dmu` is computed either with:
+  - finite-difference FD (`TSAI_SCREENING_MODEL="fd_fdiff"`), or
+  - MB approximation (`"mb"`).
+
+The simulated thermalized volumetric power is taken as:
+
+`P_th_model = - (du/dt)_intra`
+
+so it can be compared directly to experimental `thermalized_power_w_cm3`.
+
+### 12.2 Inverse model: `T(P_th, mu_e)`
+
+The code computes a dense forward table on a regular grid:
+
+`(mu_e_i, T_j) -> P_th_model(mu_e_i, T_j)`
+
+Then each fixed-`mu_e` slice is inverted numerically to build:
+
+`(mu_e_i, P_th_k) -> T`
+
+and a 2D interpolator is built over `(mu_e, log10(P_th))`.
+
+### 12.3 Experimental comparison (requested workflow)
+
+The pipeline evaluates the inverse model at each experimental point:
+
+`T_sim_i = T(P_th_exp_i, mu_e_exp_i)`
+
+and writes:
+- `outputs/tsai_temperature_comparison.csv` with `T_exp`, `T_sim`, and errors,
+- `outputs/tsai_temperature_comparison.png`:
+  - left: simulated `T(P_th, mu_e)` manifold with experimental `(mu_e, P_th)` points overlaid,
+  - right: parity-style `T_sim` vs `T_exp`.
+
+It also writes:
+- `outputs/tsai_du_dt_samples_at_experimental_muT.csv`, which directly reports Eq. (48) at the experimental `(mu_e, T_exp)` points.
+
+## 13) Optional Tsai-Model Table Overlay (Legacy/External)
 
 1. Run this pipeline to generate experimental `(n, T, P_th)` points.
 2. Prepare a CSV file with columns `n_cm3`, `temperature_k`, `p_th_w_cm3`.
@@ -334,7 +412,8 @@ Files written to `outputs/`:
 4. Re-run the pipeline.
 5. Inspect the comparison plots and `outputs/pth_experiment_vs_tsai.csv`.
 
-## 13) Current Limitations
+## 14) Current Limitations
 
 - FD values are reported, but FD-specific uncertainty propagation is not yet implemented.
 - The model is a compact thermodynamic reconstruction, not a full microscopic transport solver.
+- Tsai Eq. (48) is integrated numerically over a finite `q` range (`TSAI_Q_MIN_CM1` to `TSAI_Q_MAX_CM1`), not analytically over `[0, inf)`.

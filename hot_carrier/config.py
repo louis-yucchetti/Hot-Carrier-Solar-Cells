@@ -57,6 +57,38 @@ ACTIVE_LAYER_THICKNESS_NM = 950.0
 # CSV columns required: n_cm3, temperature_k, p_th_w_cm3
 TSAI_MODEL_TABLE_CSV = ""
 
+# Tsai 2018 electron intraband cooling model (Eq. 41 + Eq. 48) settings.
+TSAI_ENABLE_SIMULATION = True
+TSAI_LATTICE_TEMPERATURE_K = 298.15
+TSAI_LO_PHONON_ENERGY_EV = 0.03536
+TSAI_LO_PHONON_LIFETIME_PS = 10.0
+TSAI_EPSILON_INF = 10.89
+TSAI_EPSILON_STATIC = 12.90
+
+# Static screening (Thomas-Fermi) setup.
+TSAI_USE_STATIC_SCREENING = True
+TSAI_SCREENING_MODEL = "fd_fdiff"  # "fd_fdiff" or "mb"
+TSAI_SCREENING_DMU_EV = 1e-4
+TSAI_SCREENING_FD_MIDPOINTS = 280
+
+# Wave-vector domain for Eq. 48 integration, in cm^-1.
+TSAI_Q_MIN_CM1 = 1e4
+TSAI_Q_MAX_CM1 = 1e8
+TSAI_Q_POINTS = 520
+
+# (mu_e, T) grid for forward map: (mu_e, T) -> P_th
+# Set min/max to np.nan to auto-infer from experimental mu_e values.
+TSAI_MU_E_GRID_MIN_EV = np.nan
+TSAI_MU_E_GRID_MAX_EV = np.nan
+TSAI_MU_E_GRID_MARGIN_EV = 0.06
+TSAI_MU_E_GRID_POINTS = 85
+TSAI_T_GRID_MIN_K = 280.0
+TSAI_T_GRID_MAX_K = 950.0
+TSAI_T_GRID_POINTS = 135
+
+# Inverse map sampling for T(P_th, mu_e)
+TSAI_PTH_INVERSE_POINTS = 240
+
 # GaAs parameters for carrier-statistics post-processing (MB and FD)
 EG_EV = 1.424
 M_E_EFF = 0.067
