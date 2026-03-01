@@ -61,20 +61,27 @@ TSAI_MODEL_TABLE_CSV = ""
 TSAI_ENABLE_SIMULATION = True
 TSAI_LATTICE_TEMPERATURE_K = 298.15
 TSAI_LO_PHONON_ENERGY_EV = 0.03536
-TSAI_LO_PHONON_LIFETIME_PS = 10.0
+TSAI_LO_PHONON_LIFETIME_PS = 16.0
 TSAI_EPSILON_INF = 10.89
 TSAI_EPSILON_STATIC = 12.90
+TSAI_PRIMARY_INPUT = "delta_mu"  # "delta_mu" or "mu_e"
 
 # Static screening (Thomas-Fermi) setup.
 TSAI_USE_STATIC_SCREENING = True
-TSAI_SCREENING_MODEL = "fd_fdiff"  # "fd_fdiff" or "mb"
+TSAI_SCREENING_MODEL = "mb"  # "fd_fdiff" or "mb"
 TSAI_SCREENING_DMU_EV = 1e-4
 TSAI_SCREENING_FD_MIDPOINTS = 280
 
 # Wave-vector domain for Eq. 48 integration, in cm^-1.
-TSAI_Q_MIN_CM1 = 1e4
+TSAI_Q_MIN_CM1 = 3e4
 TSAI_Q_MAX_CM1 = 1e8
 TSAI_Q_POINTS = 520
+
+# (Delta_mu, T) grid when TSAI_PRIMARY_INPUT = "delta_mu"
+TSAI_DELTA_MU_GRID_MIN_EV = np.nan
+TSAI_DELTA_MU_GRID_MAX_EV = np.nan
+TSAI_DELTA_MU_GRID_MARGIN_EV = 0.06
+TSAI_DELTA_MU_GRID_POINTS = 90
 
 # (mu_e, T) grid for forward map: (mu_e, T) -> P_th
 # Set min/max to np.nan to auto-infer from experimental mu_e values.

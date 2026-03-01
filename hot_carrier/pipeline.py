@@ -41,6 +41,7 @@ from .plotting import (
     plot_summary,
     plot_thermalized_power_diagnostics,
     plot_tsai_temperature_comparison,
+    plot_tsai_temperature_rise_vs_pth_density,
     setup_plot_style,
 )
 from .tsai_model import TsaiWorkflowResult, run_tsai_temperature_workflow
@@ -126,12 +127,14 @@ def _print_run_summary(
     print(f"Pth(n,T) figure:  {out_dir / 'pth_nT_comparison.png'}")
     if tsai_simulation_result is not None:
         print(f"Tsai T-plot:      {out_dir / 'tsai_temperature_comparison.png'}")
+        print(f"Tsai FOM plot:    {out_dir / 'tsai_temperature_rise_vs_pth_density.png'}")
     if comparison_df is not None:
         print(f"Tsai compare CSV: {out_dir / 'pth_experiment_vs_tsai.csv'}")
     if tsai_simulation_result is not None:
-        print(f"Tsai forward CSV: {out_dir / 'tsai_forward_muT_to_pth.csv'}")
-        print(f"Tsai inverse CSV: {out_dir / 'tsai_inverse_pth_mu_to_temperature.csv'}")
-        print(f"Tsai T-CSV:       {out_dir / 'tsai_temperature_comparison.csv'}")
+        print(f"Tsai forward CSV: {tsai_simulation_result.forward_csv_path}")
+        print(f"Tsai inverse CSV: {tsai_simulation_result.inverse_csv_path}")
+        print(f"Tsai sample CSV:  {tsai_simulation_result.samples_csv_path}")
+        print(f"Tsai T-CSV:       {tsai_simulation_result.comparison_csv_path}")
         print(
             "Tsai model run:   Eq.41 + Eq.48 | "
             f"forward grid points={tsai_simulation_result.forward_table_df.shape[0]}"
@@ -251,6 +254,10 @@ def main() -> None:
             plot_tsai_temperature_comparison(
                 tsai_result=tsai_simulation_result,
                 outpath=out_dir / "tsai_temperature_comparison.png",
+            )
+            plot_tsai_temperature_rise_vs_pth_density(
+                tsai_result=tsai_simulation_result,
+                outpath=out_dir / "tsai_temperature_rise_vs_pth_density.png",
             )
     if comparison_df is not None:
         comparison_df.to_csv(out_dir / "pth_experiment_vs_tsai.csv", index=False)

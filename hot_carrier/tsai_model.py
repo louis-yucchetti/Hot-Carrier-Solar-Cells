@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 
+from .analysis import compute_mu_and_density_mb
 from .config import (
     E_CHARGE,
     EG_EV,
@@ -15,6 +16,10 @@ from .config import (
     K_B,
     M0,
     M_E_EFF,
+    TSAI_DELTA_MU_GRID_MARGIN_EV,
+    TSAI_DELTA_MU_GRID_MAX_EV,
+    TSAI_DELTA_MU_GRID_MIN_EV,
+    TSAI_DELTA_MU_GRID_POINTS,
     TSAI_ENABLE_SIMULATION,
     TSAI_EPSILON_INF,
     TSAI_EPSILON_STATIC,
@@ -26,6 +31,7 @@ from .config import (
     TSAI_MU_E_GRID_MIN_EV,
     TSAI_MU_E_GRID_POINTS,
     TSAI_PTH_INVERSE_POINTS,
+    TSAI_PRIMARY_INPUT,
     TSAI_Q_MAX_CM1,
     TSAI_Q_MIN_CM1,
     TSAI_Q_POINTS,
@@ -47,9 +53,14 @@ class TsaiWorkflowResult:
     forward_table_df: pd.DataFrame
     inverse_table_df: pd.DataFrame
     experimental_prediction_df: pd.DataFrame
-    mu_grid_ev: np.ndarray
+    primary_axis_values: np.ndarray
     temperature_grid_k: np.ndarray
     p_th_grid_w_cm3: np.ndarray
+    primary_axis_name: str
+    forward_csv_path: Path
+    inverse_csv_path: Path
+    samples_csv_path: Path
+    comparison_csv_path: Path
 
 
 def _log1p_exp(x: np.ndarray) -> np.ndarray:
@@ -58,17 +69,12 @@ def _log1p_exp(x: np.ndarray) -> np.ndarray:
 
 
 def _fermi_dirac_half(eta: float, midpoints: int) -> float:
-    """
-    Complete Fermi-Dirac integral F_{1/2}(eta):
-      F_{1/2}(eta) = (2/sqrt(pi)) * integral_0^inf sqrt(eps)/(1 + exp(eps-eta)) d eps
-    """
     if not np.isfinite(eta):
         return np.nan
 
     eta = float(eta)
     if eta <= -8.0:
         return float(np.exp(eta))
-
     if eta >= 12.0:
         leading = (4.0 / (3.0 * np.sqrt(np.pi))) * eta**1.5
         correction = (np.pi**2 / (6.0 * np.sqrt(np.pi))) * eta**-0.5
@@ -226,6 +232,34 @@ def _screened_matrix_element_sq_times_volume_j2(
     return base * screening_factor
 
 
+def _mu_e_from_delta_mu_mb(delta_mu_ev: float, temperature_k: float) -> float:
+    if (
+        (not np.isfinite(delta_mu_ev))
+        or (not np.isfinite(temperature_k))
+        or (temperature_k <= 0)
+    ):
+        return np.nan
+    mu_e_ev, _, _ = compute_mu_and_density_mb(
+        temperature_k=float(temperature_k),
+        qfls_ev=float(delta_mu_ev),
+    )
+    return float(mu_e_ev)
+
+
+def _density_from_delta_mu_mb(delta_mu_ev: float, temperature_k: float) -> float:
+    if (
+        (not np.isfinite(delta_mu_ev))
+        or (not np.isfinite(temperature_k))
+        or (temperature_k <= 0)
+    ):
+        return np.nan
+    _, _, n_cm3 = compute_mu_and_density_mb(
+        temperature_k=float(temperature_k),
+        qfls_ev=float(delta_mu_ev),
+    )
+    return float(n_cm3)
+
+
 def _tau_c_lo_q_seconds(
     q_m1: np.ndarray,
     mu_e_ev: float,
@@ -246,6 +280,7 @@ def _tau_c_lo_q_seconds(
     lo_phonon_energy_j = TSAI_LO_PHONON_ENERGY_EV * E_CHARGE
     omega_lo = lo_phonon_energy_j / HBAR
 
+    # mu_e is referenced to mid-gap in this project; convert to conduction-band reference.
     mu_c_ev = mu_e_ev - 0.5 * EG_EV
     mu_c_j = mu_c_ev * E_CHARGE
     eta_c = mu_c_j / (K_B * temperature_k)
@@ -333,7 +368,7 @@ def compute_du_dt_intra_electron_w_cm3(
     du_dt_intra_w_m3 = -float((1.0 / (2.0 * np.pi**2)) * np.trapezoid(integrand, q))
     du_dt_intra_w_cm3 = du_dt_intra_w_m3 / 1e6
 
-    # Energy-relaxation time (Eq. 48 definition) over the same q-domain used numerically.
+    # Eq. 48 definition of tau_E over the same numerical q-domain.
     u_delta_integrand = (q**2) * lo_phonon_energy_j * n_delta
     u_delta_j_m3 = float((1.0 / (2.0 * np.pi**2)) * np.trapezoid(u_delta_integrand, q))
     if np.isfinite(du_dt_intra_w_m3) and np.isfinite(u_delta_j_m3) and (du_dt_intra_w_m3 < 0):
@@ -344,72 +379,97 @@ def compute_du_dt_intra_electron_w_cm3(
     return float(du_dt_intra_w_cm3), float(q_s_m1 / 100.0), float(tau_energy_s)
 
 
-def _build_mu_grid_ev(experimental_mu_e_ev: np.ndarray) -> np.ndarray:
-    if np.isfinite(TSAI_MU_E_GRID_MIN_EV):
-        mu_min = float(TSAI_MU_E_GRID_MIN_EV)
+def _build_axis_grid(
+    experimental_values: np.ndarray,
+    *,
+    min_value: float,
+    max_value: float,
+    margin: float,
+    points: int,
+) -> np.ndarray:
+    if np.isfinite(min_value):
+        v_min = float(min_value)
     else:
-        mu_min = float(np.nanmin(experimental_mu_e_ev) - TSAI_MU_E_GRID_MARGIN_EV)
+        v_min = float(np.nanmin(experimental_values) - margin)
 
-    if np.isfinite(TSAI_MU_E_GRID_MAX_EV):
-        mu_max = float(TSAI_MU_E_GRID_MAX_EV)
+    if np.isfinite(max_value):
+        v_max = float(max_value)
     else:
-        mu_max = float(np.nanmax(experimental_mu_e_ev) + TSAI_MU_E_GRID_MARGIN_EV)
+        v_max = float(np.nanmax(experimental_values) + margin)
 
-    if mu_max <= mu_min:
-        mu_min, mu_max = mu_min - 0.05, mu_min + 0.05
+    if v_max <= v_min:
+        v_min, v_max = v_min - 0.02, v_min + 0.02
 
-    return np.linspace(mu_min, mu_max, max(3, int(TSAI_MU_E_GRID_POINTS)), dtype=float)
+    return np.linspace(v_min, v_max, max(3, int(points)), dtype=float)
 
 
 def _compute_forward_grid(
-    mu_grid_ev: np.ndarray,
+    primary_axis_values: np.ndarray,
     temperature_grid_k: np.ndarray,
     q_grid_m1: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    n_mu = mu_grid_ev.size
+    primary_axis_name: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    n_axis = primary_axis_values.size
     n_t = temperature_grid_k.size
-    du_dt_grid_w_cm3 = np.full((n_mu, n_t), np.nan, dtype=float)
-    qs_grid_cm1 = np.full((n_mu, n_t), np.nan, dtype=float)
-    tau_energy_grid_s = np.full((n_mu, n_t), np.nan, dtype=float)
+    du_dt_grid_w_cm3 = np.full((n_axis, n_t), np.nan, dtype=float)
+    qs_grid_cm1 = np.full((n_axis, n_t), np.nan, dtype=float)
+    tau_energy_grid_s = np.full((n_axis, n_t), np.nan, dtype=float)
+    mu_e_grid_ev = np.full((n_axis, n_t), np.nan, dtype=float)
 
-    for i, mu_e_ev in enumerate(mu_grid_ev):
+    for i, axis_value in enumerate(primary_axis_values):
         for j, temperature_k in enumerate(temperature_grid_k):
+            if primary_axis_name == "delta_mu_ev":
+                mu_e_ev = _mu_e_from_delta_mu_mb(
+                    delta_mu_ev=float(axis_value),
+                    temperature_k=float(temperature_k),
+                )
+            elif primary_axis_name == "mu_e_ev":
+                mu_e_ev = float(axis_value)
+            else:
+                raise ValueError("primary_axis_name must be 'delta_mu_ev' or 'mu_e_ev'.")
+
             du_dt_w_cm3, qs_cm1, tau_energy_s = compute_du_dt_intra_electron_w_cm3(
                 mu_e_ev=mu_e_ev,
-                temperature_k=temperature_k,
+                temperature_k=float(temperature_k),
                 q_grid_m1=q_grid_m1,
                 lattice_temperature_k=TSAI_LATTICE_TEMPERATURE_K,
             )
             du_dt_grid_w_cm3[i, j] = du_dt_w_cm3
             qs_grid_cm1[i, j] = qs_cm1
             tau_energy_grid_s[i, j] = tau_energy_s
+            mu_e_grid_ev[i, j] = mu_e_ev
 
-    return du_dt_grid_w_cm3, qs_grid_cm1, tau_energy_grid_s
+    return du_dt_grid_w_cm3, qs_grid_cm1, tau_energy_grid_s, mu_e_grid_ev
 
 
 def _forward_grid_to_dataframe(
-    mu_grid_ev: np.ndarray,
+    primary_axis_values: np.ndarray,
     temperature_grid_k: np.ndarray,
     du_dt_grid_w_cm3: np.ndarray,
     qs_grid_cm1: np.ndarray,
     tau_energy_grid_s: np.ndarray,
+    mu_e_grid_ev: np.ndarray,
+    primary_axis_name: str,
 ) -> pd.DataFrame:
-    mu_mesh, t_mesh = np.meshgrid(mu_grid_ev, temperature_grid_k, indexing="ij")
+    axis_mesh, t_mesh = np.meshgrid(primary_axis_values, temperature_grid_k, indexing="ij")
     p_th_model_w_cm3 = np.maximum(-du_dt_grid_w_cm3, 0.0)
-    return pd.DataFrame(
+
+    out = pd.DataFrame(
         {
-            "mu_e_ev": mu_mesh.ravel(),
+            primary_axis_name: axis_mesh.ravel(),
             "temperature_k": t_mesh.ravel(),
+            "mu_e_ev": mu_e_grid_ev.ravel(),
             "du_dt_intra_w_cm3": du_dt_grid_w_cm3.ravel(),
             "p_th_model_w_cm3": p_th_model_w_cm3.ravel(),
             "q_s_cm1": qs_grid_cm1.ravel(),
             "tau_c_lo_energy_s": tau_energy_grid_s.ravel(),
         }
     )
+    return out
 
 
 def _build_inverse_grid(
-    mu_grid_ev: np.ndarray,
+    primary_axis_values: np.ndarray,
     temperature_grid_k: np.ndarray,
     p_th_grid_w_cm3: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -423,13 +483,13 @@ def _build_inverse_grid(
         max(24, int(TSAI_PTH_INVERSE_POINTS)),
     )
     temperature_inverse = np.full(
-        (mu_grid_ev.size, p_th_axis_w_cm3.size),
+        (primary_axis_values.size, p_th_axis_w_cm3.size),
         np.nan,
         dtype=float,
     )
     log_axis = np.log10(p_th_axis_w_cm3)
 
-    for i in range(mu_grid_ev.size):
+    for i in range(primary_axis_values.size):
         row_pth = p_th_grid_w_cm3[i, :]
         valid = np.isfinite(row_pth) & (row_pth > 0) & np.isfinite(temperature_grid_k)
         if np.count_nonzero(valid) < 2:
@@ -457,14 +517,15 @@ def _build_inverse_grid(
 
 
 def _inverse_grid_to_dataframe(
-    mu_grid_ev: np.ndarray,
+    primary_axis_values: np.ndarray,
     p_th_axis_w_cm3: np.ndarray,
     temperature_inverse_k: np.ndarray,
+    primary_axis_name: str,
 ) -> pd.DataFrame:
-    mu_mesh, pth_mesh = np.meshgrid(mu_grid_ev, p_th_axis_w_cm3, indexing="ij")
+    axis_mesh, pth_mesh = np.meshgrid(primary_axis_values, p_th_axis_w_cm3, indexing="ij")
     return pd.DataFrame(
         {
-            "mu_e_ev": mu_mesh.ravel(),
+            primary_axis_name: axis_mesh.ravel(),
             "p_th_w_cm3": pth_mesh.ravel(),
             "temperature_k": temperature_inverse_k.ravel(),
         }
@@ -472,13 +533,13 @@ def _inverse_grid_to_dataframe(
 
 
 def _build_temperature_predictor(
-    mu_grid_ev: np.ndarray,
+    primary_axis_values: np.ndarray,
     p_th_axis_w_cm3: np.ndarray,
     temperature_inverse_k: np.ndarray,
 ) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
-    mu_mesh, pth_mesh = np.meshgrid(mu_grid_ev, p_th_axis_w_cm3, indexing="ij")
+    axis_mesh, pth_mesh = np.meshgrid(primary_axis_values, p_th_axis_w_cm3, indexing="ij")
     valid = (
-        np.isfinite(mu_mesh)
+        np.isfinite(axis_mesh)
         & np.isfinite(pth_mesh)
         & (pth_mesh > 0)
         & np.isfinite(temperature_inverse_k)
@@ -486,20 +547,20 @@ def _build_temperature_predictor(
     if np.count_nonzero(valid) < 4:
         raise ValueError("Inverse Tsai map has insufficient finite points for interpolation.")
 
-    points = np.column_stack([mu_mesh[valid], np.log10(pth_mesh[valid])])
+    points = np.column_stack([axis_mesh[valid], np.log10(pth_mesh[valid])])
     values = temperature_inverse_k[valid]
     linear_interp = LinearNDInterpolator(points, values, fill_value=np.nan)
     nearest_interp = NearestNDInterpolator(points, values)
 
-    def predictor(mu_e_ev: np.ndarray, p_th_w_cm3: np.ndarray) -> np.ndarray:
-        mu = np.asarray(mu_e_ev, dtype=float)
+    def predictor(primary_values: np.ndarray, p_th_w_cm3: np.ndarray) -> np.ndarray:
+        axis = np.asarray(primary_values, dtype=float)
         pth = np.asarray(p_th_w_cm3, dtype=float)
-        out = np.full_like(mu, np.nan, dtype=float)
-        valid_local = np.isfinite(mu) & np.isfinite(pth) & (pth > 0)
+        out = np.full_like(axis, np.nan, dtype=float)
+        valid_local = np.isfinite(axis) & np.isfinite(pth) & (pth > 0)
         if not np.any(valid_local):
             return out
 
-        query = np.column_stack([mu[valid_local], np.log10(pth[valid_local])])
+        query = np.column_stack([axis[valid_local], np.log10(pth[valid_local])])
         pred = np.asarray(linear_interp(query), dtype=float)
         missing = ~np.isfinite(pred)
         if np.any(missing):
@@ -510,31 +571,55 @@ def _build_temperature_predictor(
     return predictor
 
 
-def _compute_experimental_mu_t_samples(
+def _compute_experimental_state_samples(
     exp_df: pd.DataFrame,
     q_grid_m1: np.ndarray,
 ) -> pd.DataFrame:
     records: list[dict[str, float]] = []
     for row in exp_df.itertuples(index=False):
+        mu_e_eval = _mu_e_from_delta_mu_mb(
+            delta_mu_ev=float(row.delta_mu_ev),
+            temperature_k=float(row.temperature_k_exp),
+        )
         du_dt_w_cm3, qs_cm1, tau_energy_s = compute_du_dt_intra_electron_w_cm3(
-            mu_e_ev=float(row.mu_e_ev),
+            mu_e_ev=mu_e_eval,
             temperature_k=float(row.temperature_k_exp),
             q_grid_m1=q_grid_m1,
             lattice_temperature_k=TSAI_LATTICE_TEMPERATURE_K,
         )
         records.append(
             {
-                "mu_e_ev": float(row.mu_e_ev),
-                "qfls_ev": float(row.qfls_ev),
+                "delta_mu_ev": float(row.delta_mu_ev),
                 "temperature_k_exp": float(row.temperature_k_exp),
+                "mu_e_ev_at_exp_state": float(mu_e_eval),
                 "p_th_exp_w_cm3": float(row.p_th_exp_w_cm3),
-                "du_dt_intra_w_cm3_at_exp_mu_t": float(du_dt_w_cm3),
-                "p_th_model_w_cm3_at_exp_mu_t": float(max(-du_dt_w_cm3, 0.0)),
-                "q_s_cm1_at_exp_mu_t": float(qs_cm1),
-                "tau_c_lo_energy_s_at_exp_mu_t": float(tau_energy_s),
+                "du_dt_intra_w_cm3_at_exp_state": float(du_dt_w_cm3),
+                "p_th_model_w_cm3_at_exp_state": float(max(-du_dt_w_cm3, 0.0)),
+                "q_s_cm1_at_exp_state": float(qs_cm1),
+                "tau_c_lo_energy_s_at_exp_state": float(tau_energy_s),
             }
         )
     return pd.DataFrame.from_records(records)
+
+
+def _predict_density_and_mu_e_from_delta_mu(
+    delta_mu_ev: np.ndarray,
+    temperature_k: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    delta_mu = np.asarray(delta_mu_ev, dtype=float)
+    temp = np.asarray(temperature_k, dtype=float)
+    n_cm3 = np.full_like(delta_mu, np.nan, dtype=float)
+    mu_e = np.full_like(delta_mu, np.nan, dtype=float)
+    for i in range(delta_mu.size):
+        if (not np.isfinite(delta_mu[i])) or (not np.isfinite(temp[i])) or (temp[i] <= 0):
+            continue
+        mu_e_i, _, n_i = compute_mu_and_density_mb(
+            temperature_k=float(temp[i]),
+            qfls_ev=float(delta_mu[i]),
+        )
+        mu_e[i] = mu_e_i
+        n_cm3[i] = n_i
+    return n_cm3, mu_e
 
 
 def run_tsai_temperature_workflow(
@@ -544,7 +629,12 @@ def run_tsai_temperature_workflow(
     if not TSAI_ENABLE_SIMULATION:
         return None
 
-    required = {"mu_e_ev", "qfls_ev", "temperature_k", "thermalized_power_w_cm3"}
+    required = {
+        "qfls_ev",
+        "temperature_k",
+        "thermalized_power_w_cm3",
+        "carrier_density_cm3",
+    }
     missing = sorted(required - set(results_df.columns))
     if missing:
         raise ValueError(
@@ -552,27 +642,39 @@ def run_tsai_temperature_workflow(
             + ", ".join(missing)
         )
 
+    mode = str(TSAI_PRIMARY_INPUT).strip().lower()
+    if mode not in {"delta_mu", "mu_e"}:
+        raise ValueError("TSAI_PRIMARY_INPUT must be either 'delta_mu' or 'mu_e'.")
+    primary_axis_name = "delta_mu_ev" if mode == "delta_mu" else "mu_e_ev"
+
     exp_df = results_df.copy()
     exp_df = exp_df.rename(
         columns={
+            "qfls_ev": "delta_mu_ev",
             "temperature_k": "temperature_k_exp",
             "thermalized_power_w_cm3": "p_th_exp_w_cm3",
+            "carrier_density_cm3": "carrier_density_exp_cm3",
+            "mu_e_ev": "mu_e_exp_ev",
         }
     )
-    exp_df = exp_df[
-        [
-            "spectrum_id",
-            "intensity_w_cm2",
-            "mu_e_ev",
-            "qfls_ev",
-            "temperature_k_exp",
-            "p_th_exp_w_cm3",
-        ]
-    ].copy()
-    exp_df = exp_df.replace([np.inf, -np.inf], np.nan).dropna()
+    required_exp_columns = [
+        "spectrum_id",
+        "intensity_w_cm2",
+        "delta_mu_ev",
+        "temperature_k_exp",
+        "p_th_exp_w_cm3",
+        "carrier_density_exp_cm3",
+    ]
+    if "mu_e_exp_ev" in exp_df.columns:
+        required_exp_columns.append("mu_e_exp_ev")
+    exp_df = exp_df[required_exp_columns].copy()
+    exp_df = exp_df.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["delta_mu_ev", "temperature_k_exp", "p_th_exp_w_cm3", "carrier_density_exp_cm3"]
+    )
     exp_df = exp_df[
         (exp_df["temperature_k_exp"] > 0)
         & (exp_df["p_th_exp_w_cm3"] > 0)
+        & (exp_df["carrier_density_exp_cm3"] > 0)
     ]
     if exp_df.shape[0] < 3:
         return None
@@ -584,7 +686,27 @@ def run_tsai_temperature_workflow(
     )
     q_grid_m1 = q_grid_cm1 * 100.0
 
-    mu_grid_ev = _build_mu_grid_ev(exp_df["mu_e_ev"].to_numpy(dtype=float))
+    if mode == "delta_mu":
+        primary_axis_values = _build_axis_grid(
+            exp_df["delta_mu_ev"].to_numpy(dtype=float),
+            min_value=float(TSAI_DELTA_MU_GRID_MIN_EV),
+            max_value=float(TSAI_DELTA_MU_GRID_MAX_EV),
+            margin=float(TSAI_DELTA_MU_GRID_MARGIN_EV),
+            points=int(TSAI_DELTA_MU_GRID_POINTS),
+        )
+    else:
+        if "mu_e_exp_ev" not in exp_df.columns:
+            raise ValueError(
+                "TSAI_PRIMARY_INPUT='mu_e' requires 'mu_e_ev' in results_df."
+            )
+        primary_axis_values = _build_axis_grid(
+            exp_df["mu_e_exp_ev"].to_numpy(dtype=float),
+            min_value=float(TSAI_MU_E_GRID_MIN_EV),
+            max_value=float(TSAI_MU_E_GRID_MAX_EV),
+            margin=float(TSAI_MU_E_GRID_MARGIN_EV),
+            points=int(TSAI_MU_E_GRID_POINTS),
+        )
+
     temperature_grid_k = np.linspace(
         float(TSAI_T_GRID_MIN_K),
         max(float(TSAI_T_GRID_MAX_K), float(TSAI_T_GRID_MIN_K) + 1.0),
@@ -592,64 +714,90 @@ def run_tsai_temperature_workflow(
         dtype=float,
     )
 
-    du_dt_grid_w_cm3, qs_grid_cm1, tau_energy_grid_s = _compute_forward_grid(
-        mu_grid_ev=mu_grid_ev,
+    du_dt_grid_w_cm3, qs_grid_cm1, tau_energy_grid_s, mu_e_grid_ev = _compute_forward_grid(
+        primary_axis_values=primary_axis_values,
         temperature_grid_k=temperature_grid_k,
         q_grid_m1=q_grid_m1,
+        primary_axis_name=primary_axis_name,
     )
     p_th_grid_w_cm3 = np.maximum(-du_dt_grid_w_cm3, 0.0)
 
     forward_table_df = _forward_grid_to_dataframe(
-        mu_grid_ev=mu_grid_ev,
+        primary_axis_values=primary_axis_values,
         temperature_grid_k=temperature_grid_k,
         du_dt_grid_w_cm3=du_dt_grid_w_cm3,
         qs_grid_cm1=qs_grid_cm1,
         tau_energy_grid_s=tau_energy_grid_s,
+        mu_e_grid_ev=mu_e_grid_ev,
+        primary_axis_name=primary_axis_name,
     )
-    forward_table_df.to_csv(out_dir / "tsai_forward_muT_to_pth.csv", index=False)
+    forward_csv_path = out_dir / "tsai_forward_stateT_to_pth.csv"
+    forward_table_df.to_csv(forward_csv_path, index=False)
 
-    samples_df = _compute_experimental_mu_t_samples(exp_df=exp_df, q_grid_m1=q_grid_m1)
-    samples_df.to_csv(out_dir / "tsai_du_dt_samples_at_experimental_muT.csv", index=False)
+    samples_df = _compute_experimental_state_samples(exp_df=exp_df, q_grid_m1=q_grid_m1)
+    samples_csv_path = out_dir / "tsai_du_dt_samples_at_experimental_state.csv"
+    samples_df.to_csv(samples_csv_path, index=False)
 
     p_th_axis_w_cm3, temperature_inverse_k = _build_inverse_grid(
-        mu_grid_ev=mu_grid_ev,
+        primary_axis_values=primary_axis_values,
         temperature_grid_k=temperature_grid_k,
         p_th_grid_w_cm3=p_th_grid_w_cm3,
     )
     inverse_table_df = _inverse_grid_to_dataframe(
-        mu_grid_ev=mu_grid_ev,
+        primary_axis_values=primary_axis_values,
         p_th_axis_w_cm3=p_th_axis_w_cm3,
         temperature_inverse_k=temperature_inverse_k,
+        primary_axis_name=primary_axis_name,
     )
-    inverse_table_df.to_csv(out_dir / "tsai_inverse_pth_mu_to_temperature.csv", index=False)
+    inverse_csv_path = out_dir / "tsai_inverse_pth_state_to_temperature.csv"
+    inverse_table_df.to_csv(inverse_csv_path, index=False)
 
     predictor = _build_temperature_predictor(
-        mu_grid_ev=mu_grid_ev,
+        primary_axis_values=primary_axis_values,
         p_th_axis_w_cm3=p_th_axis_w_cm3,
         temperature_inverse_k=temperature_inverse_k,
     )
-    exp_mu = exp_df["mu_e_ev"].to_numpy(dtype=float)
+    if mode == "delta_mu":
+        primary_exp = exp_df["delta_mu_ev"].to_numpy(dtype=float)
+    else:
+        primary_exp = exp_df["mu_e_exp_ev"].to_numpy(dtype=float)
     exp_p_th = exp_df["p_th_exp_w_cm3"].to_numpy(dtype=float)
-    temperature_sim_k = predictor(exp_mu, exp_p_th)
+    temperature_sim_k = predictor(primary_exp, exp_p_th)
 
-    comparison_df = exp_df.copy()
-    comparison_df["temperature_sim_k"] = temperature_sim_k
-    comparison_df["temperature_error_k"] = (
-        comparison_df["temperature_sim_k"] - comparison_df["temperature_k_exp"]
+    exp_df["temperature_sim_k"] = temperature_sim_k
+    exp_df["temperature_error_k"] = exp_df["temperature_sim_k"] - exp_df["temperature_k_exp"]
+    exp_df["temperature_abs_error_k"] = np.abs(exp_df["temperature_error_k"])
+    exp_df["temperature_error_pct"] = (
+        100.0 * exp_df["temperature_error_k"] / exp_df["temperature_k_exp"]
     )
-    comparison_df["temperature_abs_error_k"] = np.abs(comparison_df["temperature_error_k"])
-    comparison_df["temperature_error_pct"] = (
-        100.0
-        * comparison_df["temperature_error_k"]
-        / comparison_df["temperature_k_exp"]
+    exp_df["temperature_rise_exp_k"] = exp_df["temperature_k_exp"] - TSAI_LATTICE_TEMPERATURE_K
+    exp_df["temperature_rise_sim_k"] = exp_df["temperature_sim_k"] - TSAI_LATTICE_TEMPERATURE_K
+
+    n_sim_cm3, mu_e_sim_ev = _predict_density_and_mu_e_from_delta_mu(
+        delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
+        temperature_k=exp_df["temperature_sim_k"].to_numpy(dtype=float),
     )
-    comparison_df.to_csv(out_dir / "tsai_temperature_comparison.csv", index=False)
+    exp_df["carrier_density_sim_cm3"] = n_sim_cm3
+    exp_df["mu_e_sim_ev"] = mu_e_sim_ev
+    if "mu_e_exp_ev" not in exp_df.columns:
+        exp_df["mu_e_exp_ev"] = _predict_density_and_mu_e_from_delta_mu(
+            delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
+            temperature_k=exp_df["temperature_k_exp"].to_numpy(dtype=float),
+        )[1]
+
+    comparison_csv_path = out_dir / "tsai_temperature_comparison.csv"
+    exp_df.to_csv(comparison_csv_path, index=False)
 
     return TsaiWorkflowResult(
         forward_table_df=forward_table_df,
         inverse_table_df=inverse_table_df,
-        experimental_prediction_df=comparison_df,
-        mu_grid_ev=mu_grid_ev,
+        experimental_prediction_df=exp_df,
+        primary_axis_values=primary_axis_values,
         temperature_grid_k=temperature_grid_k,
         p_th_grid_w_cm3=p_th_grid_w_cm3,
+        primary_axis_name=primary_axis_name,
+        forward_csv_path=forward_csv_path,
+        inverse_csv_path=inverse_csv_path,
+        samples_csv_path=samples_csv_path,
+        comparison_csv_path=comparison_csv_path,
     )

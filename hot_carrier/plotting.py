@@ -933,16 +933,23 @@ def plot_tsai_temperature_comparison(
     tsai_result: "TsaiWorkflowResult",
     outpath: Path,
 ) -> None:
+    axis_name = tsai_result.primary_axis_name
+    axis_label = (
+        r"QFLS, $\Delta\mu$ (eV)"
+        if axis_name == "delta_mu_ev"
+        else r"Electron chemical potential, $\mu_e$ (eV)"
+    )
     inverse_df = tsai_result.inverse_table_df.copy()
     inverse_df = inverse_df.replace([np.inf, -np.inf], np.nan).dropna()
     inverse_df = inverse_df[
         (inverse_df["p_th_w_cm3"] > 0)
         & (inverse_df["temperature_k"] > 0)
     ]
+    if axis_name not in inverse_df.columns:
+        return
     exp_df = tsai_result.experimental_prediction_df.copy()
-    exp_df = exp_df.replace([np.inf, -np.inf], np.nan).dropna(
-        subset=["mu_e_ev", "p_th_exp_w_cm3", "temperature_k_exp", "temperature_sim_k"]
-    )
+    required_exp = [axis_name, "p_th_exp_w_cm3", "temperature_k_exp", "temperature_sim_k"]
+    exp_df = exp_df.replace([np.inf, -np.inf], np.nan).dropna(subset=required_exp)
     exp_df = exp_df[
         (exp_df["p_th_exp_w_cm3"] > 0)
         & (exp_df["temperature_k_exp"] > 0)
@@ -954,7 +961,7 @@ def plot_tsai_temperature_comparison(
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11.6, 4.9))
 
     tri = Triangulation(
-        inverse_df["mu_e_ev"].to_numpy(dtype=float),
+        inverse_df[axis_name].to_numpy(dtype=float),
         np.log10(inverse_df["p_th_w_cm3"].to_numpy(dtype=float)),
     )
     temp_vals = inverse_df["temperature_k"].to_numpy(dtype=float)
@@ -970,7 +977,7 @@ def plot_tsai_temperature_comparison(
         cmap="viridis",
     )
     ax0.scatter(
-        exp_df["mu_e_ev"],
+        exp_df[axis_name],
         exp_df["p_th_exp_w_cm3"],
         s=54,
         facecolors="none",
@@ -980,7 +987,7 @@ def plot_tsai_temperature_comparison(
         label="Experimental (mu_e, P_th)",
     )
     ax0.scatter(
-        exp_df["mu_e_ev"],
+        exp_df[axis_name],
         exp_df["p_th_exp_w_cm3"],
         s=16,
         c="k",
@@ -988,20 +995,20 @@ def plot_tsai_temperature_comparison(
         zorder=4,
     )
     style_axes(ax0, logy=True)
-    ax0.set_xlabel(r"Electron chemical potential, $\mu_e$ (eV)")
+    ax0.set_xlabel(axis_label)
     ax0.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
-    ax0.set_title(r"Simulated $T(P_{\mathrm{th}},\mu_e)$ with experimental points")
+    ax0.set_title("Simulated inverse map with experimental points")
     ax0.legend(loc="best", fontsize=8.5)
     cbar0 = fig.colorbar(contour, ax=ax0, pad=0.02, fraction=0.055)
     cbar0.set_label("Simulated temperature (K)")
 
     t_exp = exp_df["temperature_k_exp"].to_numpy(dtype=float)
     t_sim = exp_df["temperature_sim_k"].to_numpy(dtype=float)
-    mu_for_color = exp_df["mu_e_ev"].to_numpy(dtype=float)
+    primary_for_color = exp_df[axis_name].to_numpy(dtype=float)
     ax1.scatter(
         t_exp,
         t_sim,
-        c=mu_for_color,
+        c=primary_for_color,
         cmap="cividis",
         s=56,
         edgecolors="white",
@@ -1015,7 +1022,7 @@ def plot_tsai_temperature_comparison(
     style_axes(ax1)
     ax1.set_xlabel(r"Experimental temperature, $T_{\mathrm{exp}}$ (K)")
     ax1.set_ylabel(r"Simulated temperature, $T_{\mathrm{sim}}$ (K)")
-    ax1.set_title(r"Pointwise $T_{\mathrm{sim}}(P_{\mathrm{th}},\mu_e)$ vs $T_{\mathrm{exp}}$")
+    ax1.set_title(r"Pointwise $T_{\mathrm{sim}}$ vs $T_{\mathrm{exp}}$")
     ax1.legend(loc="best", fontsize=8.5)
     mae_k = float(np.nanmean(np.abs(t_sim - t_exp)))
     bias_k = float(np.nanmean(t_sim - t_exp))
@@ -1036,6 +1043,115 @@ def plot_tsai_temperature_comparison(
     )
 
     fig.suptitle("Tsai-model temperature inversion against experiment", y=1.02)
+    fig.tight_layout(pad=0.7)
+    save_figure(fig, outpath)
+    plt.close(fig)
+
+
+def plot_tsai_temperature_rise_vs_pth_density(
+    tsai_result: "TsaiWorkflowResult",
+    outpath: Path,
+) -> None:
+    df = tsai_result.experimental_prediction_df.copy()
+    needed = [
+        "p_th_exp_w_cm3",
+        "temperature_rise_exp_k",
+        "temperature_rise_sim_k",
+        "carrier_density_exp_cm3",
+        "carrier_density_sim_cm3",
+    ]
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=needed)
+    if df.shape[0] < 2:
+        return
+
+    pth = df["p_th_exp_w_cm3"].to_numpy(dtype=float)
+    dT_exp = df["temperature_rise_exp_k"].to_numpy(dtype=float)
+    dT_sim = df["temperature_rise_sim_k"].to_numpy(dtype=float)
+    n_exp = df["carrier_density_exp_cm3"].to_numpy(dtype=float)
+    n_sim = df["carrier_density_sim_cm3"].to_numpy(dtype=float)
+
+    valid = (
+        np.isfinite(pth)
+        & (pth > 0)
+        & np.isfinite(dT_exp)
+        & np.isfinite(dT_sim)
+        & np.isfinite(n_exp)
+        & np.isfinite(n_sim)
+        & (n_exp > 0)
+        & (n_sim > 0)
+    )
+    if np.count_nonzero(valid) < 2:
+        return
+
+    pth = pth[valid]
+    dT_exp = dT_exp[valid]
+    dT_sim = dT_sim[valid]
+    n_exp = n_exp[valid]
+    n_sim = n_sim[valid]
+
+    n_all = np.concatenate([n_exp, n_sim])
+    n_norm = LogNorm(vmin=float(np.min(n_all)), vmax=float(np.max(n_all)))
+    cmap = cm.viridis
+
+    fig, ax = plt.subplots(figsize=(8.4, 5.6))
+    for x, y0, y1 in zip(pth, dT_exp, dT_sim, strict=True):
+        ax.plot([x, x], [y0, y1], color="0.65", lw=0.8, alpha=0.35, zorder=1)
+
+    ax.scatter(
+        pth,
+        dT_exp,
+        c=n_exp,
+        cmap=cmap,
+        norm=n_norm,
+        s=58,
+        marker="o",
+        edgecolors="white",
+        linewidths=0.6,
+        label="Experimental",
+        zorder=3,
+    )
+    ax.scatter(
+        pth,
+        dT_sim,
+        c=n_sim,
+        cmap=cmap,
+        norm=n_norm,
+        s=62,
+        marker="^",
+        edgecolors="black",
+        linewidths=0.5,
+        label="Tsai-simulated",
+        zorder=4,
+    )
+
+    style_axes(ax, logx=True)
+    ax.set_xlabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+    ax.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
+    ax.set_title(r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ colored by carrier density")
+    ax.legend(loc="best", fontsize=9)
+
+    sm = cm.ScalarMappable(norm=n_norm, cmap=cmap)
+    cbar = fig.colorbar(sm, ax=ax, pad=0.02, fraction=0.055)
+    cbar.set_label(r"Carrier density, $n$ (cm$^{-3}$)")
+
+    mae_rise = float(np.nanmean(np.abs(dT_sim - dT_exp)))
+    bias_rise = float(np.nanmean(dT_sim - dT_exp))
+    ax.text(
+        0.03,
+        0.97,
+        f"MAE(ΔT) = {mae_rise:.2f} K\nBias(ΔT) = {bias_rise:.2f} K",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8.8,
+        bbox={
+            "facecolor": "white",
+            "edgecolor": "0.35",
+            "boxstyle": "square,pad=0.2",
+            "alpha": 0.92,
+        },
+    )
+
     fig.tight_layout(pad=0.7)
     save_figure(fig, outpath)
     plt.close(fig)

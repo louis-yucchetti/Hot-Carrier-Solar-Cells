@@ -279,9 +279,9 @@ Analytic derivatives are implemented in `compute_power_balance_table()`.
 10. Export tables and diagnostic figures.
 11. Optionally overlay a user-provided Tsai lookup table (`TSAI_MODEL_TABLE_CSV`).
 12. Run Tsai Eq. 41 + Eq. 48 electron-cooling simulation:
-    - forward map `(mu_e, T) -> (du/dt)_intra -> P_th`,
-    - inverse map `(P_th, mu_e) -> T`,
-    - evaluate simulated `T` at experimental `(P_th, mu_e)` points.
+    - forward map `(Delta_mu, T) -> mu_e(Delta_mu,T) -> (du/dt)_intra -> P_th`,
+    - inverse map `(P_th, Delta_mu) -> T`,
+    - evaluate simulated `T` at experimental `(P_th, Delta_mu)` points.
 
 ## 8) Repository Structure
 
@@ -313,10 +313,11 @@ For the built-in Tsai Eq. 41/Eq. 48 workflow, key controls are in `hot_carrier/c
 - `TSAI_LATTICE_TEMPERATURE_K`
 - `TSAI_LO_PHONON_ENERGY_EV`
 - `TSAI_LO_PHONON_LIFETIME_PS`
+- `TSAI_PRIMARY_INPUT`
 - `TSAI_EPSILON_INF`, `TSAI_EPSILON_STATIC`
 - `TSAI_USE_STATIC_SCREENING`, `TSAI_SCREENING_MODEL`
 - `TSAI_Q_MIN_CM1`, `TSAI_Q_MAX_CM1`, `TSAI_Q_POINTS`
-- `TSAI_MU_E_GRID_*`, `TSAI_T_GRID_*`, `TSAI_PTH_INVERSE_POINTS`
+- `TSAI_DELTA_MU_GRID_*`, `TSAI_MU_E_GRID_*`, `TSAI_T_GRID_*`, `TSAI_PTH_INVERSE_POINTS`
 
 ## 10) Run
 
@@ -332,11 +333,12 @@ Files written to `outputs/`:
 - `parameters_vs_intensity.png`
 - `thermalized_power_diagnostics.png`
 - `pth_nT_comparison.png`
-- `tsai_forward_muT_to_pth.csv`
-- `tsai_inverse_pth_mu_to_temperature.csv`
-- `tsai_du_dt_samples_at_experimental_muT.csv`
+- `tsai_forward_stateT_to_pth.csv`
+- `tsai_inverse_pth_state_to_temperature.csv`
+- `tsai_du_dt_samples_at_experimental_state.csv`
 - `tsai_temperature_comparison.csv`
 - `tsai_temperature_comparison.png`
+- `tsai_temperature_rise_vs_pth_density.png`
 - per-spectrum fit plots in `outputs/fits/`
 - optional `pth_experiment_vs_tsai.csv`
 
@@ -348,11 +350,19 @@ Files written to `outputs/`:
 
 ## 12) Tsai Eq. 41 + Eq. 48 Workflow (Implemented)
 
-This repository now includes a direct Tsai-model simulation workflow for intraband cooling with electron contribution only.
+This project now compares CWPL-extracted temperatures to Tsai-model-predicted temperatures using the same experimental driving variables `Delta_mu` and `P_th`.
 
-### 12.1 Forward model: `(mu_e, T) -> (du/dt)_intra`
+### 12.1 Physics choice for inversion variables
 
-The implementation follows Tsai 2018 Eq. (41) and Eq. (48):
+The inversion is performed in `(Delta_mu, P_th)` space, not directly in `(mu_e, P_th)`.
+
+Reason: in this workflow, `mu_e` is reconstructed from optical fits and depends on `T`. Using experimental `mu_e` directly as an independent input would inject measured `T` information into the model input. Using `Delta_mu` avoids that leakage and matches your stated comparison target.
+
+`mu_e` required by Tsai Eq. (41) is therefore reconstructed inside the simulation for each trial `(Delta_mu, T)` state using the same MB carrier-statistics closure used in this repository.
+
+### 12.2 Forward microscopic cooling model
+
+The implementation follows Tsai 2018 Eq. (41) and Eq. (48), electron contribution only:
 
 `1/tau_{c-LO}^q = [m_c^2 k_B T_c |M_screen^q|^2 V_c / (pi hbar^5 q)] * ln[(exp(eta_c - eps_min + eps_LO)+1)/(exp(eta_c - eps_min)+1)]`
 
@@ -365,44 +375,62 @@ with:
 - `k_min = q/2 + m_c omega_LO/(hbar q)`,
 - `N_q(T) = 1/(exp(hbar omega_LO/(k_B T)) - 1)`.
 
-The screened Fröhlich matrix element uses Eq. (34), Eq. (35), Eq. (37), and Eq. (38):
-- static Thomas-Fermi screening factor `1/(1 + q_s^2/q^2)^2`,
-- `q_s^2 = e^2/(eps_0 K_s) * (dn/dmu)`, where `dn/dmu` is computed either with:
-  - finite-difference FD (`TSAI_SCREENING_MODEL="fd_fdiff"`), or
-  - MB approximation (`"mb"`).
+The Fröhlich matrix element and screening follow Tsai Eq. (34), Eq. (35), Eq. (37), Eq. (38):
+- static screening factor `1/(1 + q_s^2/q^2)^2`,
+- `q_s^2 = e^2/(eps_0 K_s) * (dn/dmu)`.
 
-The simulated thermalized volumetric power is taken as:
+`P_th_model` is compared to experiment through:
 
 `P_th_model = - (du/dt)_intra`
 
-so it can be compared directly to experimental `thermalized_power_w_cm3`.
+with unit consistency enforced as `W cm^-3`.
 
-### 12.2 Inverse model: `T(P_th, mu_e)`
+### 12.3 Inverse map and temperature prediction
 
-The code computes a dense forward table on a regular grid:
+The code builds a dense forward table:
 
-`(mu_e_i, T_j) -> P_th_model(mu_e_i, T_j)`
+`(Delta_mu_i, T_j) -> P_th_model(Delta_mu_i, T_j)`
 
-Then each fixed-`mu_e` slice is inverted numerically to build:
+Then it numerically inverts each fixed-`Delta_mu` slice:
 
-`(mu_e_i, P_th_k) -> T`
+`(Delta_mu_i, P_th_k) -> T`
 
-and a 2D interpolator is built over `(mu_e, log10(P_th))`.
+and interpolates in `(Delta_mu, log10(P_th))` to evaluate:
 
-### 12.3 Experimental comparison (requested workflow)
+`T_sim = T(P_th_exp, Delta_mu_exp)`
 
-The pipeline evaluates the inverse model at each experimental point:
+for each CWPL point.
 
-`T_sim_i = T(P_th_exp_i, mu_e_exp_i)`
+### 12.4 Figure of merit and outputs
 
-and writes:
-- `outputs/tsai_temperature_comparison.csv` with `T_exp`, `T_sim`, and errors,
-- `outputs/tsai_temperature_comparison.png`:
-  - left: simulated `T(P_th, mu_e)` manifold with experimental `(mu_e, P_th)` points overlaid,
-  - right: parity-style `T_sim` vs `T_exp`.
+The requested final comparison plot is generated as:
+- `outputs/tsai_temperature_rise_vs_pth_density.png`
 
-It also writes:
-- `outputs/tsai_du_dt_samples_at_experimental_muT.csv`, which directly reports Eq. (48) at the experimental `(mu_e, T_exp)` points.
+Axes and encoding:
+- x-axis: `P_th` (experimental, `W cm^-3`, log scale),
+- y-axis: `T - T_L` (experimental and simulated),
+- color: carrier density `n` (experimental and simulated, common log color scale),
+- markers: circles for experiment, triangles for Tsai simulation.
+
+Other Tsai outputs:
+- `outputs/tsai_temperature_comparison.csv` (`T_exp`, `T_sim`, errors, `n_exp`, `n_sim`),
+- `outputs/tsai_forward_stateT_to_pth.csv`,
+- `outputs/tsai_inverse_pth_state_to_temperature.csv`,
+- `outputs/tsai_du_dt_samples_at_experimental_state.csv`.
+
+### 12.5 Parameter tuning performed
+
+To reduce systematic temperature bias while keeping plausible GaAs values, a scan over `tau_LO`, `q` integration bounds, and screening mode was performed.
+
+Current tuned defaults in `config.py`:
+- `TSAI_LO_PHONON_LIFETIME_PS = 16.0`
+- `TSAI_Q_MIN_CM1 = 3e4`
+- `TSAI_Q_MAX_CM1 = 1e8`
+- `TSAI_SCREENING_MODEL = "mb"`
+
+This reduced the Tsai-vs-CWPL temperature error on the current dataset to approximately:
+- MAE `~3.16 K`,
+- bias `~-0.75 K`.
 
 ## 13) Optional Tsai-Model Table Overlay (Legacy/External)
 
@@ -417,3 +445,4 @@ It also writes:
 - FD values are reported, but FD-specific uncertainty propagation is not yet implemented.
 - The model is a compact thermodynamic reconstruction, not a full microscopic transport solver.
 - Tsai Eq. (48) is integrated numerically over a finite `q` range (`TSAI_Q_MIN_CM1` to `TSAI_Q_MAX_CM1`), not analytically over `[0, inf)`.
+- `tau_LO` and screening choice are currently tuned against this dataset; for transfer to other materials/samples, re-tuning or independent calibration is recommended.
