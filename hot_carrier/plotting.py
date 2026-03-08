@@ -27,6 +27,51 @@ if TYPE_CHECKING:
     from .tsai_model import TsaiWorkflowResult
 
 
+IEEE_PAGE_SINGLE_COLUMN_WIDTH_IN = 7.16
+PAGE_SHORT_FIG_HEIGHT_IN = 4.1
+PAGE_MEDIUM_FIG_HEIGHT_IN = 5.3
+PAGE_TALL_FIG_HEIGHT_IN = 6.2
+PAGE_GRID_FIG_HEIGHT_IN = 5.8
+PAGE_LARGE_GRID_FIG_HEIGHT_IN = 6.4
+
+AXES_LABEL_FONT_SIZE = 9.4
+TITLE_FONT_SIZE = 9.8
+TICK_FONT_SIZE = 8.4
+LEGEND_FONT_SIZE = 8.0
+ANNOTATION_FONT_SIZE = 8.0
+PANEL_LABEL_FONT_SIZE = 8.8
+SUPTITLE_FONT_SIZE = 10.2
+
+
+def _page_single_column_figsize(height_in: float) -> tuple[float, float]:
+    return (IEEE_PAGE_SINGLE_COLUMN_WIDTH_IN, height_in)
+
+
+def _style_colorbar(colorbar, label: str) -> None:
+    colorbar.set_label(label, fontsize=AXES_LABEL_FONT_SIZE)
+    colorbar.ax.tick_params(direction="in", labelsize=TICK_FONT_SIZE)
+
+
+def _add_panel_label(ax: plt.Axes, label: str) -> None:
+    ax.text(
+        0.03,
+        0.93,
+        label,
+        transform=ax.transAxes,
+        fontsize=PANEL_LABEL_FONT_SIZE,
+        fontweight="semibold",
+        ha="left",
+        va="top",
+    )
+
+
+def _raise_annotation(text_artist: plt.Text) -> None:
+    text_artist.set_zorder(30)
+    bbox_patch = text_artist.get_bbox_patch()
+    if bbox_patch is not None:
+        bbox_patch.set_zorder(29)
+
+
 def setup_plot_style() -> None:
     plt.style.use("default")
     plt.rcParams.update(
@@ -37,27 +82,29 @@ def setup_plot_style() -> None:
             "font.family": "serif",
             "font.serif": ["Times New Roman", "STIXGeneral", "DejaVu Serif"],
             "mathtext.fontset": "stix",
-            "axes.labelsize": 12,
-            "axes.titlesize": 12,
+            "axes.labelsize": AXES_LABEL_FONT_SIZE,
+            "axes.titlesize": TITLE_FONT_SIZE,
             "axes.titleweight": "semibold",
-            "axes.linewidth": 1.0,
-            "xtick.labelsize": 10,
-            "ytick.labelsize": 10,
+            "axes.linewidth": 0.9,
+            "xtick.labelsize": TICK_FONT_SIZE,
+            "ytick.labelsize": TICK_FONT_SIZE,
             "xtick.direction": "in",
             "ytick.direction": "in",
             "xtick.top": True,
             "ytick.right": True,
-            "xtick.major.size": 5.0,
-            "xtick.minor.size": 2.8,
-            "ytick.major.size": 5.0,
-            "ytick.minor.size": 2.8,
+            "xtick.major.size": 4.0,
+            "xtick.minor.size": 2.2,
+            "ytick.major.size": 4.0,
+            "ytick.minor.size": 2.2,
             "legend.frameon": True,
             "legend.framealpha": 0.93,
             "legend.fancybox": False,
             "legend.edgecolor": "0.25",
+            "legend.fontsize": LEGEND_FONT_SIZE,
             "grid.alpha": 0.22,
             "grid.linestyle": "--",
-            "lines.linewidth": 1.7,
+            "grid.linewidth": 0.45,
+            "lines.linewidth": 1.35,
             "savefig.dpi": SAVE_DPI,
         }
     )
@@ -76,8 +123,8 @@ def style_axes(ax: plt.Axes, logx: bool = False, logy: bool = False) -> None:
     if logy:
         ax.yaxis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
         ax.yaxis.set_minor_formatter(NullFormatter())
-    ax.grid(True, which="major", linewidth=0.7)
-    ax.grid(True, which="minor", linewidth=0.35, alpha=0.12)
+    ax.grid(True, which="major", linewidth=0.55)
+    ax.grid(True, which="minor", linewidth=0.28, alpha=0.12)
 
 
 def save_figure(fig: plt.Figure, outpath: Path) -> None:
@@ -91,7 +138,7 @@ def plot_raw_spectra(
     intensities_w_cm2: np.ndarray,
     outpath: Path,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(8.2, 5.4))
+    fig, ax = plt.subplots(figsize=_page_single_column_figsize(PAGE_SHORT_FIG_HEIGHT_IN))
     norm = LogNorm(vmin=np.min(intensities_w_cm2), vmax=np.max(intensities_w_cm2))
     cmap = cm.cividis
 
@@ -112,9 +159,8 @@ def plot_raw_spectra(
 
     sm = cm.ScalarMappable(norm=norm, cmap=cmap)
     cbar = fig.colorbar(sm, ax=ax, pad=0.018, fraction=0.045)
-    cbar.set_label(r"Excitation intensity (W cm$^{-2}$)")
-    cbar.ax.tick_params(direction="in")
-    fig.subplots_adjust(left=0.11, right=0.97, bottom=0.08, top=0.95, hspace=0.2)
+    _style_colorbar(cbar, r"Excitation intensity (W cm$^{-2}$)")
+    fig.subplots_adjust(left=0.11, right=0.97, bottom=0.11, top=0.92)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -135,9 +181,9 @@ def plot_single_fit(
     fig, axes = plt.subplots(
         2,
         1,
-        figsize=(8.2, 7.3),
+        figsize=_page_single_column_figsize(PAGE_TALL_FIG_HEIGHT_IN),
         sharex=False,
-        gridspec_kw={"height_ratios": [1.25, 1.0], "hspace": 0.16},
+        gridspec_kw={"height_ratios": [1.25, 1.0], "hspace": 0.18},
     )
     ax0, ax1 = axes
 
@@ -217,7 +263,7 @@ def plot_single_fit(
     style_axes(ax0, logy=True)
     ax0.set_xlabel(r"Photon energy, $E$ (eV)")
     ax0.set_ylabel(r"PL intensity, $I_{\mathrm{PL}}$ (a.u.)")
-    ax0.legend(loc="lower left", fontsize=9)
+    ax0.legend(loc="lower left", fontsize=LEGEND_FONT_SIZE)
     ax0.set_title(
         f"Spectrum {result.spectrum_id}  |  "
         f"$I_{{exc}}$={result.intensity_w_cm2:.3g} W cm$^{{-2}}$"
@@ -235,14 +281,15 @@ def plot_single_fit(
         + f"window=[{fit_min_ev:.3f}, {fit_max_ev:.3f}] eV"
         + f", scan={result.fit_range_samples:d}"
     )
-    ax0.text(
+    info_artist = ax0.text(
         0.985,
         0.97,
         info_text,
         transform=ax0.transAxes,
         ha="right",
         va="top",
-        fontsize=9,
+        fontsize=ANNOTATION_FONT_SIZE,
+        clip_on=False,
         bbox={
             "facecolor": "white",
             "edgecolor": "0.3",
@@ -250,6 +297,7 @@ def plot_single_fit(
             "alpha": 0.95,
         },
     )
+    _raise_annotation(info_artist)
 
     y_all = linearized_signal(energy_ev[intensity > 0], intensity[intensity > 0])
     ax1.plot(energy_ev[intensity > 0], y_all, color="0.35", lw=1.05, label="Linearized data")
@@ -274,9 +322,9 @@ def plot_single_fit(
     style_axes(ax1)
     ax1.set_xlabel(r"Photon energy, $E$ (eV)")
     ax1.set_ylabel(r"$\ln\!\left(\frac{h^3 c^2}{2E^2}I_{\mathrm{PL}}\right)$")
-    ax1.legend(loc="best", fontsize=9)
+    ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
 
-    fig.subplots_adjust(left=0.11, right=0.97, bottom=0.08, top=0.95, hspace=0.2)
+    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.09, top=0.94, hspace=0.18)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -293,7 +341,12 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         x_min_plot = np.nan
         x_max_plot = np.nan
 
-    fig, axes = plt.subplots(2, 2, figsize=(10.2, 7.8), sharex=True)
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=_page_single_column_figsize(PAGE_GRID_FIG_HEIGHT_IN),
+        sharex=True,
+    )
     ax00, ax01, ax10, ax11 = axes.ravel()
 
     ax00.errorbar(
@@ -309,7 +362,7 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     )
     style_axes(ax00, logx=True)
     ax00.set_ylabel(r"Temperature, $T$ (K)")
-    ax00.text(0.03, 0.93, "(a)", transform=ax00.transAxes, fontsize=11, fontweight="semibold")
+    _add_panel_label(ax00, "(a)")
 
     ax01.errorbar(
         x,
@@ -338,8 +391,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     )
     style_axes(ax01, logx=True)
     ax01.set_ylabel(r"QFLS (eV)")
-    ax01.legend(loc="best", fontsize=9)
-    ax01.text(0.03, 0.93, "(b)", transform=ax01.transAxes, fontsize=11, fontweight="semibold")
+    ax01.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    _add_panel_label(ax01, "(b)")
 
     ax10.errorbar(
         x,
@@ -388,8 +441,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     style_axes(ax10, logx=True)
     ax10.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
     ax10.set_ylabel(r"Chemical potential (eV)")
-    ax10.legend(loc="best", fontsize=9)
-    ax10.text(0.03, 0.93, "(c)", transform=ax10.transAxes, fontsize=11, fontweight="semibold")
+    ax10.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    _add_panel_label(ax10, "(c)")
 
     n_vals = results_df["carrier_density_cm3"].to_numpy(dtype=float)
     n_err = results_df["carrier_density_err_total_cm3"].to_numpy(dtype=float)
@@ -419,8 +472,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     style_axes(ax11, logx=True, logy=True)
     ax11.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
     ax11.set_ylabel(r"Carrier density, $n$ (cm$^{-3}$)")
-    ax11.legend(loc="best", fontsize=9)
-    ax11.text(0.03, 0.93, "(d)", transform=ax11.transAxes, fontsize=11, fontweight="semibold")
+    ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    _add_panel_label(ax11, "(d)")
 
     if np.isfinite(x_min_plot) and np.isfinite(x_max_plot) and (x_max_plot > x_min_plot):
         for ax in (ax00, ax01, ax10, ax11):
@@ -428,10 +481,10 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
 
     fig.suptitle(
         "Extracted hot-carrier parameters versus excitation intensity",
-        y=1.01,
-        fontsize=13,
+        y=0.992,
+        fontsize=SUPTITLE_FONT_SIZE,
     )
-    fig.tight_layout(pad=0.7)
+    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.10, top=0.93, hspace=0.22, wspace=0.22)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -537,7 +590,11 @@ def plot_pth_nt_comparison(
     intensity_plot = intensity[valid]
 
     pth_norm = LogNorm(vmin=float(np.min(p_th_plot)), vmax=float(np.max(p_th_plot)))
-    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11.2, 4.8))
+    fig, (ax0, ax1) = plt.subplots(
+        1,
+        2,
+        figsize=_page_single_column_figsize(PAGE_SHORT_FIG_HEIGHT_IN),
+    )
 
     ax0.errorbar(
         n_plot,
@@ -581,7 +638,7 @@ def plot_pth_nt_comparison(
                     linewidths=1.0,
                     alpha=0.9,
                 )
-                ax0.clabel(contour, inline=True, fmt="%.2e", fontsize=7)
+                ax0.clabel(contour, inline=True, fmt="%.2e", fontsize=TICK_FONT_SIZE - 0.4)
         except RuntimeError:
             ax0.text(
                 0.03,
@@ -590,7 +647,7 @@ def plot_pth_nt_comparison(
                 transform=ax0.transAxes,
                 ha="left",
                 va="bottom",
-                fontsize=7.5,
+                fontsize=ANNOTATION_FONT_SIZE,
                 bbox={
                     "facecolor": "white",
                     "edgecolor": "0.45",
@@ -604,7 +661,7 @@ def plot_pth_nt_comparison(
     ax0.set_ylabel(r"Carrier temperature, $T$ (K)")
     ax0.set_title(r"Experimental manifold in $(n,T)$ colored by $P_{\mathrm{th}}$")
     cbar0 = fig.colorbar(s0, ax=ax0, pad=0.02, fraction=0.05)
-    cbar0.set_label(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+    _style_colorbar(cbar0, r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
 
     comparison_df: pd.DataFrame | None = None
     if theory_df is not None:
@@ -665,9 +722,9 @@ def plot_pth_nt_comparison(
             ax1.set_xlabel(r"Experimental $P_{\mathrm{th}}$ (W cm$^{-3}$)")
             ax1.set_ylabel(r"Tsai-model $P_{\mathrm{th}}$ (W cm$^{-3}$)")
             ax1.set_title("Direct pointwise comparison at measured $(n,T)$")
-            ax1.legend(loc="best", fontsize=8.5)
+            ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
             cbar1 = fig.colorbar(s1, ax=ax1, pad=0.02, fraction=0.05)
-            cbar1.set_label(r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+            _style_colorbar(cbar1, r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
             comparison_df = pd.DataFrame(
                 {
                     "carrier_density_cm3": n_plot[valid_cmp],
@@ -691,7 +748,7 @@ def plot_pth_nt_comparison(
                 transform=ax1.transAxes,
                 ha="center",
                 va="center",
-                fontsize=9,
+                fontsize=ANNOTATION_FONT_SIZE,
             )
             ax1.set_xticks([])
             ax1.set_yticks([])
@@ -723,10 +780,14 @@ def plot_pth_nt_comparison(
         ax1.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
         ax1.set_title(r"Experimental $P_{\mathrm{th}}(n)$, color-coded by $T$")
         cbar1 = fig.colorbar(s1, ax=ax1, pad=0.02, fraction=0.05)
-        cbar1.set_label("Temperature (K)")
+        _style_colorbar(cbar1, "Temperature (K)")
 
-    fig.suptitle(r"Comparison-ready representation of $P_{\mathrm{th}}(n,T)$", y=1.02)
-    fig.tight_layout(pad=0.7)
+    fig.suptitle(
+        r"Comparison-ready representation of $P_{\mathrm{th}}(n,T)$",
+        y=0.992,
+        fontsize=SUPTITLE_FONT_SIZE,
+    )
+    fig.subplots_adjust(left=0.10, right=0.97, bottom=0.12, top=0.90, wspace=0.28)
     save_figure(fig, outpath)
     plt.close(fig)
     return comparison_df
@@ -789,7 +850,11 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     thermalized_energy_plot = thermalized_energy_pair_ev[valid]
     intensity_plot = intensity_w_cm2[valid]
 
-    fig, axes = plt.subplots(2, 2, figsize=(11.2, 8.3))
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=_page_single_column_figsize(PAGE_LARGE_GRID_FIG_HEIGHT_IN),
+    )
     ax00, ax01 = axes[0]
     ax10, ax11 = axes[1]
 
@@ -819,9 +884,9 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     ax00.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
     ax00.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
     ax00.set_title(r"Volumetric thermalized power across carrier states")
-    cbar00 = fig.colorbar(s00, ax=ax00, pad=0.02, fraction=0.052)
-    cbar00.set_label("Temperature (K)")
-    ax00.text(0.03, 0.93, "(a)", transform=ax00.transAxes, fontsize=11, fontweight="semibold")
+    cbar00 = fig.colorbar(s00, ax=ax00, pad=0.02, fraction=0.05)
+    _style_colorbar(cbar00, "Temperature (K)")
+    _add_panel_label(ax00, "(a)")
 
     norm_n = LogNorm(vmin=float(np.min(n_plot)), vmax=float(np.max(n_plot)))
     ax01.errorbar(
@@ -851,9 +916,9 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     ax01.set_xlabel("Carrier temperature, $T$ (K)")
     ax01.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
     ax01.set_title(r"Thermalized power versus carrier temperature")
-    cbar01 = fig.colorbar(s01, ax=ax01, pad=0.02, fraction=0.052)
-    cbar01.set_label(r"$n$ (cm$^{-3}$)")
-    ax01.text(0.03, 0.93, "(b)", transform=ax01.transAxes, fontsize=11, fontweight="semibold")
+    cbar01 = fig.colorbar(s01, ax=ax01, pad=0.02, fraction=0.05)
+    _style_colorbar(cbar01, r"$n$ (cm$^{-3}$)")
+    _add_panel_label(ax01, "(b)")
 
     ax10.errorbar(
         n_plot,
@@ -881,9 +946,9 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     ax10.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
     ax10.set_ylabel(r"$P_{\mathrm{th}}/n$ (eV s$^{-1}$ carrier$^{-1}$)")
     ax10.set_title(r"Per-carrier cooling rate versus carrier density")
-    cbar10 = fig.colorbar(s10, ax=ax10, pad=0.02, fraction=0.052)
-    cbar10.set_label("Temperature (K)")
-    ax10.text(0.03, 0.93, "(c)", transform=ax10.transAxes, fontsize=11, fontweight="semibold")
+    cbar10 = fig.colorbar(s10, ax=ax10, pad=0.02, fraction=0.05)
+    _style_colorbar(cbar10, "Temperature (K)")
+    _add_panel_label(ax10, "(c)")
 
     intensity_norm = LogNorm(vmin=float(np.min(intensity_plot)), vmax=float(np.max(intensity_plot)))
     ax11.errorbar(
@@ -951,13 +1016,17 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     ax11.set_xlabel("Carrier temperature, $T$ (K)")
     ax11.set_ylabel(r"Thermalized energy per pair (eV)")
     ax11.set_title(r"Excess energy dissipated per absorbed carrier pair")
-    ax11.legend(loc="best", fontsize=8.5)
-    cbar11 = fig.colorbar(s11, ax=ax11, pad=0.02, fraction=0.052)
-    cbar11.set_label(r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
-    ax11.text(0.03, 0.93, "(d)", transform=ax11.transAxes, fontsize=11, fontweight="semibold")
+    ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    cbar11 = fig.colorbar(s11, ax=ax11, pad=0.02, fraction=0.05)
+    _style_colorbar(cbar11, r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+    _add_panel_label(ax11, "(d)")
 
-    fig.suptitle(r"Thermalized-power diagnostics in carrier-state space", y=1.01)
-    fig.tight_layout(pad=0.8)
+    fig.suptitle(
+        r"Thermalized-power diagnostics in carrier-state space",
+        y=0.992,
+        fontsize=SUPTITLE_FONT_SIZE,
+    )
+    fig.subplots_adjust(left=0.10, right=0.97, bottom=0.10, top=0.92, hspace=0.28, wspace=0.26)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -994,7 +1063,7 @@ def plot_mb_validity_limit(
     fig, (ax0, ax1) = plt.subplots(
         2,
         1,
-        figsize=(8.7, 6.9),
+        figsize=_page_single_column_figsize(PAGE_MEDIUM_FIG_HEIGHT_IN),
         sharex=True,
         gridspec_kw={"height_ratios": [2.8, 1.6], "hspace": 0.08},
     )
@@ -1103,7 +1172,7 @@ def plot_mb_validity_limit(
             transform=ax0.transAxes,
             ha="left",
             va="bottom",
-            fontsize=8.8,
+            fontsize=ANNOTATION_FONT_SIZE,
             bbox={
                 "facecolor": "white",
                 "edgecolor": "0.35",
@@ -1120,7 +1189,7 @@ def plot_mb_validity_limit(
     top_handles, top_labels = ax0.get_legend_handles_labels()
     top_handles.append(Line2D([0], [0], color="0.25", lw=1.2, ls="--"))
     top_labels.append("MB affine reference")
-    ax0.legend(top_handles, top_labels, loc="best", fontsize=8.6)
+    ax0.legend(top_handles, top_labels, loc="best", fontsize=LEGEND_FONT_SIZE)
 
     ax1.axhline(
         rel_error_limit,
@@ -1133,7 +1202,7 @@ def plot_mb_validity_limit(
     ax1.set_xlabel(r"Reduced QFLS, $(\Delta\mu - E_g)/(k_B T)$")
     ax1.set_ylabel(r"$\Phi_{\mathrm{BE}}/\Phi_{\mathrm{MB}} - 1$")
     ax1.set_title(r"Deviation from MB")
-    ax1.legend(loc="best", fontsize=8.6)
+    ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
     ax1.set_xlim(x_left, x_right)
 
     if limits_df is not None and (not limits_df.empty):
@@ -1149,7 +1218,7 @@ def plot_mb_validity_limit(
                 transform=ax1.transAxes,
                 ha="left",
                 va="bottom",
-                fontsize=8.5,
+                fontsize=ANNOTATION_FONT_SIZE,
                 bbox={
                     "facecolor": "white",
                     "edgecolor": "0.35",
@@ -1158,7 +1227,7 @@ def plot_mb_validity_limit(
                 },
             )
 
-    fig.subplots_adjust(left=0.12, right=0.97, bottom=0.09, top=0.95, hspace=0.09)
+    fig.subplots_adjust(left=0.12, right=0.98, bottom=0.11, top=0.92, hspace=0.10)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1192,7 +1261,11 @@ def plot_tsai_temperature_comparison(
     if (inverse_df.shape[0] < 4) or (exp_df.shape[0] < 2):
         return
 
-    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11.6, 4.9))
+    fig, (ax0, ax1) = plt.subplots(
+        1,
+        2,
+        figsize=_page_single_column_figsize(PAGE_SHORT_FIG_HEIGHT_IN),
+    )
 
     tri = Triangulation(
         inverse_df[axis_name].to_numpy(dtype=float),
@@ -1232,9 +1305,9 @@ def plot_tsai_temperature_comparison(
     ax0.set_xlabel(axis_label)
     ax0.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
     ax0.set_title("Simulated inverse map with experimental points")
-    ax0.legend(loc="best", fontsize=8.5)
-    cbar0 = fig.colorbar(contour, ax=ax0, pad=0.02, fraction=0.055)
-    cbar0.set_label("Simulated temperature (K)")
+    ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    cbar0 = fig.colorbar(contour, ax=ax0, pad=0.02, fraction=0.05)
+    _style_colorbar(cbar0, "Simulated temperature (K)")
 
     t_exp = exp_df["temperature_k_exp"].to_numpy(dtype=float)
     t_sim = exp_df["temperature_sim_k"].to_numpy(dtype=float)
@@ -1257,7 +1330,7 @@ def plot_tsai_temperature_comparison(
     ax1.set_xlabel(r"Experimental temperature, $T_{\mathrm{exp}}$ (K)")
     ax1.set_ylabel(r"Simulated temperature, $T_{\mathrm{sim}}$ (K)")
     ax1.set_title(r"Pointwise $T_{\mathrm{sim}}$ vs $T_{\mathrm{exp}}$")
-    ax1.legend(loc="best", fontsize=8.5)
+    ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
     mae_k = float(np.nanmean(np.abs(t_sim - t_exp)))
     bias_k = float(np.nanmean(t_sim - t_exp))
     ax1.text(
@@ -1267,7 +1340,7 @@ def plot_tsai_temperature_comparison(
         transform=ax1.transAxes,
         ha="left",
         va="top",
-        fontsize=8.8,
+        fontsize=ANNOTATION_FONT_SIZE,
         bbox={
             "facecolor": "white",
             "edgecolor": "0.35",
@@ -1276,8 +1349,12 @@ def plot_tsai_temperature_comparison(
         },
     )
 
-    fig.suptitle("Tsai-model temperature inversion against experiment", y=1.02)
-    fig.tight_layout(pad=0.7)
+    fig.suptitle(
+        "Tsai-model temperature inversion against experiment",
+        y=0.992,
+        fontsize=SUPTITLE_FONT_SIZE,
+    )
+    fig.subplots_adjust(left=0.10, right=0.97, bottom=0.12, top=0.90, wspace=0.28)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1330,7 +1407,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
     fig, (ax0, ax1) = plt.subplots(
         2,
         1,
-        figsize=(8.6, 6.8),
+        figsize=_page_single_column_figsize(PAGE_MEDIUM_FIG_HEIGHT_IN),
         sharex=True,
         gridspec_kw={"height_ratios": [3.0, 1.5], "hspace": 0.08},
     )
@@ -1367,7 +1444,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
     style_axes(ax0, logx=True)
     ax0.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
     ax0.set_title(r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ colored by carrier density")
-    ax0.legend(loc="best", fontsize=9)
+    ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
 
     delta_t = dT_sim - dT_exp
     ax1.axhline(0.0, color="0.25", lw=1.0, ls="--", zorder=1)
@@ -1389,8 +1466,8 @@ def plot_tsai_temperature_rise_vs_pth_density(
     ax1.set_title(r"Residual diagnostic")
 
     sm = cm.ScalarMappable(norm=n_norm, cmap=cmap)
-    cbar = fig.colorbar(sm, ax=[ax0, ax1], pad=0.02, fraction=0.045)
-    cbar.set_label(r"Carrier density, $n$ (cm$^{-3}$)")
+    cbar = fig.colorbar(sm, ax=[ax0, ax1], pad=0.02, fraction=0.04)
+    _style_colorbar(cbar, r"Carrier density, $n$ (cm$^{-3}$)")
 
     mae_rise = float(np.nanmean(np.abs(delta_t)))
     bias_rise = float(np.nanmean(delta_t))
@@ -1401,7 +1478,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
         transform=ax1.transAxes,
         ha="left",
         va="top",
-        fontsize=8.7,
+        fontsize=ANNOTATION_FONT_SIZE,
         bbox={
             "facecolor": "white",
             "edgecolor": "0.35",
@@ -1410,6 +1487,6 @@ def plot_tsai_temperature_rise_vs_pth_density(
         },
     )
 
-    fig.subplots_adjust(left=0.10, right=0.88, bottom=0.10, top=0.95, hspace=0.10)
+    fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.93, hspace=0.10)
     save_figure(fig, outpath)
     plt.close(fig)
