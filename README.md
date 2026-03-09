@@ -346,8 +346,10 @@ the state approaches degeneracy. In this repository:
 
 - both MB and FD carrier reconstructions are exported with propagated
   uncertainties derived from the same fitted `T` and `Delta_mu`,
-- MB values remain the default quantities used in the current power-balance
-  per-carrier terms and in the `Delta_mu`-based Tsai inversion,
+- FD values are now the default quantities used in the per-carrier
+  power-balance terms and in the `Delta_mu`-based Tsai inversion,
+- MB companion values are still exported so the statistical closure can be
+  compared explicitly in the thermalized-power and Tsai diagnostics,
 - FD values show how much the reconstructed carrier state shifts when
   degeneracy matters.
 
@@ -454,6 +456,17 @@ The function also propagates first-order uncertainties from:
 - PLQY,
 - extracted temperature.
 
+The volumetric power channels themselves do not depend on MB versus FD carrier
+statistics. The statistics choice only enters the derived per-carrier cooling
+quantities through the carrier density. The code now exports both:
+
+- `thermalized_power_per_carrier_mb_ev_s`,
+- `thermalized_power_per_carrier_fd_ev_s`,
+
+and uses FD by default for the generic
+`thermalized_power_per_carrier_ev_s` column through
+`POWER_BALANCE_CARRIER_STATISTICS = "fd"`.
+
 The result is a useful energy-partition diagnostic, but it is intentionally
 compact. It is not a full transport model, and it does not include spatial
 gradients, diffusion, or a microscopic treatment of all recombination channels.
@@ -481,12 +494,14 @@ to use the experimental `mu_e` directly as an independent variable, one would be
 feeding a quantity into the model that already depends on the measured `T`.
 
 To avoid that leakage, the default workflow uses the experimental `Delta_mu` and
-reconstructs `mu_e(Delta_mu, T)` internally with the same MB closure used
-elsewhere in the repository.
+reconstructs `mu_e(Delta_mu, T)` internally from the same optical state using a
+configurable carrier-statistics closure. The current default is
+`TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`, while MB comparison columns are also
+exported for side-by-side inspection.
 
 That logic is implemented in:
 
-- `hot_carrier.tsai_model._mu_e_from_delta_mu_mb()`,
+- `hot_carrier.tsai_model._mu_e_from_delta_mu()`,
 - `hot_carrier.tsai_model._compute_forward_grid()`,
 - `hot_carrier.tsai_model.run_tsai_temperature_workflow()`.
 
@@ -531,21 +546,31 @@ The main exported Tsai comparison products are:
 - `outputs/tsai_temperature_comparison.csv`,
 - `outputs/tsai_temperature_rise_vs_pth_density.png`.
 
+When `TSAI_PRIMARY_INPUT = "delta_mu"`, the comparison tables now include both
+MB and FD reconstructions of:
+
+- experimental `mu_e` and carrier density,
+- simulated `mu_e` and carrier density,
+- Tsai-predicted temperatures and residuals.
+
 With the bundled dataset and current tuned defaults:
 
 - `TSAI_LO_PHONON_LIFETIME_PS = 16.0`,
 - `TSAI_Q_MIN_CM1 = 3e4`,
 - `TSAI_Q_MAX_CM1 = 1e8`,
 - `TSAI_SCREENING_MODEL = "mb"`,
+- `TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`,
 
 the present Tsai comparison gives approximately:
 
-- MAE `~= 3.15 K`,
-- bias `~= -0.68 K`.
+- FD default closure: MAE `~= 3.31 K`, bias `~= -1.76 K`,
+- MB comparison closure: MAE `~= 3.15 K`, bias `~= -0.68 K`.
 
 That is a useful internal consistency check for this dataset, but it should not
 be treated as a general validation of the model outside the present sample and
-parameter choices.
+parameter choices. In particular, changing the carrier-statistics closure does
+not change the separate screening approximation; the current defaults still use
+`TSAI_SCREENING_MODEL = "mb"` unless that is switched explicitly.
 
 ## 11. Software Architecture
 
@@ -559,8 +584,7 @@ The repository is small enough that each file has a clear role:
   uncertainties, MB-validity scan, and power balance.
 - `hot_carrier/tsai_model.py`: Tsai cooling model plus forward and inverse
   grids.
-- `hot_carrier/plotting.py`: all figures and optional external-theory
-  overlays.
+- `hot_carrier/plotting.py`: all figures and diagnostics.
 - `hot_carrier/models.py`: data classes used to assemble fit results cleanly.
 
 There is no command-line interface at the moment. The expected way to use the
@@ -579,7 +603,8 @@ Most users only need to touch a small number of configuration blocks:
   `PLQY_RESULTS_CSV`, `ACTIVE_LAYER_THICKNESS_NM`
 - MB diagnostic: `MB_VALIDITY_*`
 - Tsai workflow: `TSAI_ENABLE_SIMULATION`, `TSAI_PRIMARY_INPUT`,
-  `TSAI_LO_*`, `TSAI_Q_*`, `TSAI_SCREENING_*`, `TSAI_*_GRID_*`
+  `TSAI_DELTA_MU_CARRIER_STATISTICS`, `TSAI_LO_*`, `TSAI_Q_*`,
+  `TSAI_SCREENING_*`, `TSAI_*_GRID_*`
 
 Two settings are especially important from a physics point of view:
 
@@ -626,7 +651,7 @@ in `outputs/`.
 - `outputs/parameters_vs_intensity.png`: `T`, `Delta_mu`, `mu_e`, `mu_h`, and
   `n` versus excitation intensity.
 - `outputs/thermalized_power_diagnostics.png`: power diagnostics in state space
-  and per-carrier form.
+  and per-carrier form, including MB-vs-FD carrier-density comparisons.
 - `outputs/mb_validity_limit.png`: exact BE versus MB integrated-GPL
   comparison.
 - `outputs/mb_validity_scan.csv`: full MB-validity scan versus reduced
@@ -642,9 +667,10 @@ in `outputs/`.
 - `outputs/tsai_du_dt_samples_at_experimental_state.csv`: cooling-rate samples
   evaluated at experimental states.
 - `outputs/tsai_temperature_comparison.csv`: experimental and simulated
-  temperatures, errors, and reconstructed densities.
+  temperatures, errors, and reconstructed MB/FD state variables.
 - `outputs/tsai_temperature_rise_vs_pth_density.png`: main figure of merit,
-  `T - T_L` versus `P_th`, colored by density.
+  `T - T_L` versus `P_th`, with MB and FD Tsai closures compared when
+  `TSAI_PRIMARY_INPUT = "delta_mu"`.
 
 ### 14.3 The most important columns in `fit_results.csv`
 
@@ -664,6 +690,7 @@ The results table is wide, but a small set of columns does most of the work:
   and `carrier_density_fd_err_total_cm3`,
 - power-balance outputs:
   `absorbed_power_*`, `recombination_power_*`, `thermalized_power_*`,
+  `thermalized_power_per_carrier_mb_*`, `thermalized_power_per_carrier_fd_*`,
   `thermalized_fraction`, `recombination_fraction`,
   `radiative_fraction`, `nonradiative_fraction`,
 - closure checks:
@@ -690,9 +717,10 @@ For the bundled dataset and present settings, the outputs tell a coherent story:
 
 The important scientific caution is that the MB and Tsai conclusions are not
 fully independent. In the current workflow, the Tsai inversion reconstructs
-`mu_e` from `Delta_mu` using the MB closure. That is a practical and sensible
-choice for the present comparison, but it means the highest-intensity points are
-also the ones where the thermodynamic closure should eventually be upgraded.
+`mu_e` from the same optical `T` and `Delta_mu` pair used for the carrier-state
+post-processing. The default closure is now FD, but the inferred agreement with
+Tsai still depends on that thermodynamic reconstruction and on the separate
+screening choice.
 
 ## 16. Current Limitations and the Most Useful Next Steps
 
@@ -706,9 +734,9 @@ also the ones where the thermodynamic closure should eventually be upgraded.
   intensity calibration and to the assumed `A0`.
 - The Tsai workflow is electron-only and does not represent a full coupled
   electron-hole transport or recombination model.
-- When `TSAI_PRIMARY_INPUT = "delta_mu"`, the Tsai inversion reconstructs
-  `mu_e` with MB statistics, which is least reliable exactly where the MB
-  validity diagnostic starts to fail.
+- Even with FD as the default `Delta_mu -> mu_e` closure, the Tsai workflow
+  still relies on a separate screening approximation, which remains MB by
+  default unless `TSAI_SCREENING_MODEL` is changed to `fd_fdiff`.
 - The repository has no automated test suite, no saved run manifest, and no
   package metadata or dependency lockfile.
 

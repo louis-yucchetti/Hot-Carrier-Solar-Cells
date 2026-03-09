@@ -65,6 +65,8 @@ PLQY_ETA_SIGMA = 0.0
 # in the power-balance stage.
 PLQY_RESULTS_CSV = "GaAs bulk_PLQY_results.csv"
 ACTIVE_LAYER_THICKNESS_NM = 950.0
+# Which carrier statistics to use for default per-carrier power quantities.
+POWER_BALANCE_CARRIER_STATISTICS = "fd"  # "fd" or "mb"
 
 # Tsai 2018 electron intraband cooling model (Eq. 41 + Eq. 48) settings.
 TSAI_ENABLE_SIMULATION = True
@@ -74,6 +76,8 @@ TSAI_LO_PHONON_LIFETIME_PS = 16.0
 TSAI_EPSILON_INF = 10.89
 TSAI_EPSILON_STATIC = 12.90
 TSAI_PRIMARY_INPUT = "delta_mu"  # "delta_mu" or "mu_e"
+# Which carrier statistics to use when reconstructing mu_e(delta_mu, T) internally.
+TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"  # "fd" or "mb"
 
 # Static screening (Thomas-Fermi) setup.
 TSAI_USE_STATIC_SCREENING = True

@@ -39,6 +39,7 @@ from .config import (
     MB_VALIDITY_X_POINTS,
     PLQY_ETA,
     PLQY_ETA_SIGMA,
+    POWER_BALANCE_CARRIER_STATISTICS,
     WINDOW_MIN_POINTS,
     WINDOW_MIN_R2,
     WINDOW_PEAK_OFFSET_EV,
@@ -1016,6 +1017,10 @@ def compute_power_balance_table(
     using the active-layer thickness.
     """
     df = results_df.copy()
+    state_model = str(POWER_BALANCE_CARRIER_STATISTICS).strip().lower()
+    if state_model not in {"mb", "fd"}:
+        raise ValueError("POWER_BALANCE_CARRIER_STATISTICS must be either 'fd' or 'mb'.")
+
     p_exc_w_cm2 = df["intensity_w_cm2"].to_numpy(dtype=float)
     n_rows = p_exc_w_cm2.size
     plqy_eta_arr = _broadcast_parameter_vector(
@@ -1037,13 +1042,23 @@ def compute_power_balance_table(
     temperature_err_k = _sanitize_nonnegative(
         df["temperature_err_total_k"].to_numpy(dtype=float)
     )
-    carrier_density_cm3 = df["carrier_density_cm3"].to_numpy(dtype=float)
+    carrier_density_mb_cm3 = df["carrier_density_cm3"].to_numpy(dtype=float)
     if "carrier_density_err_total_cm3" in df.columns:
-        carrier_density_err_cm3 = _sanitize_nonnegative(
+        carrier_density_mb_err_cm3 = _sanitize_nonnegative(
             df["carrier_density_err_total_cm3"].to_numpy(dtype=float)
         )
     else:
-        carrier_density_err_cm3 = np.zeros_like(carrier_density_cm3, dtype=float)
+        carrier_density_mb_err_cm3 = np.zeros_like(carrier_density_mb_cm3, dtype=float)
+    if "carrier_density_fd_cm3" in df.columns:
+        carrier_density_fd_cm3 = df["carrier_density_fd_cm3"].to_numpy(dtype=float)
+    else:
+        carrier_density_fd_cm3 = carrier_density_mb_cm3.copy()
+    if "carrier_density_fd_err_total_cm3" in df.columns:
+        carrier_density_fd_err_cm3 = _sanitize_nonnegative(
+            df["carrier_density_fd_err_total_cm3"].to_numpy(dtype=float)
+        )
+    else:
+        carrier_density_fd_err_cm3 = carrier_density_mb_err_cm3.copy()
 
     e_laser_j, e_laser_ev = _laser_photon_energy_from_wavelength(laser_wavelength_nm)
     eg_j = eg_ev * E_CHARGE
@@ -1144,15 +1159,39 @@ def compute_power_balance_table(
     recombination_fraction = _safe_ratio(p_rec_w_cm2, p_abs_w_cm2)
     radiative_fraction = _safe_ratio(p_rad_w_cm2, p_abs_w_cm2)
     nonradiative_fraction = _safe_ratio(p_nonrad_w_cm2, p_abs_w_cm2)
-    thermalized_power_per_carrier_ev_s = _safe_ratio(
+    thermalized_power_per_carrier_mb_ev_s = _safe_ratio(
         p_th_w_cm3,
-        carrier_density_cm3 * E_CHARGE,
+        carrier_density_mb_cm3 * E_CHARGE,
     )
     rel_p_th = np.nan_to_num(_safe_ratio(p_th_err_w_cm3, np.abs(p_th_w_cm3)), nan=0.0)
-    rel_n = np.nan_to_num(_safe_ratio(carrier_density_err_cm3, carrier_density_cm3), nan=0.0)
-    thermalized_power_per_carrier_err_ev_s = (
-        np.abs(thermalized_power_per_carrier_ev_s) * np.sqrt(rel_p_th**2 + rel_n**2)
+    rel_n_mb = np.nan_to_num(
+        _safe_ratio(carrier_density_mb_err_cm3, carrier_density_mb_cm3),
+        nan=0.0,
     )
+    thermalized_power_per_carrier_mb_err_ev_s = (
+        np.abs(thermalized_power_per_carrier_mb_ev_s) * np.sqrt(rel_p_th**2 + rel_n_mb**2)
+    )
+    thermalized_power_per_carrier_fd_ev_s = _safe_ratio(
+        p_th_w_cm3,
+        carrier_density_fd_cm3 * E_CHARGE,
+    )
+    rel_n_fd = np.nan_to_num(
+        _safe_ratio(carrier_density_fd_err_cm3, carrier_density_fd_cm3),
+        nan=0.0,
+    )
+    thermalized_power_per_carrier_fd_err_ev_s = (
+        np.abs(thermalized_power_per_carrier_fd_ev_s) * np.sqrt(rel_p_th**2 + rel_n_fd**2)
+    )
+    if state_model == "fd":
+        thermalized_power_per_carrier_ev_s = thermalized_power_per_carrier_fd_ev_s
+        thermalized_power_per_carrier_err_ev_s = (
+            thermalized_power_per_carrier_fd_err_ev_s
+        )
+    else:
+        thermalized_power_per_carrier_ev_s = thermalized_power_per_carrier_mb_ev_s
+        thermalized_power_per_carrier_err_ev_s = (
+            thermalized_power_per_carrier_mb_err_ev_s
+        )
 
     _assign_dataframe_columns(
         df,
@@ -1161,6 +1200,7 @@ def compute_power_balance_table(
             "laser_photon_energy_ev": float(e_laser_ev),
             "absorptivity_at_laser": float(absorptivity_at_laser),
             "absorptivity_at_laser_sigma": float(absorptivity_at_laser_sigma),
+            "power_balance_carrier_statistics_model": state_model,
             "plqy_eta": plqy_eta_arr,
             "plqy_eta_sigma": plqy_eta_sigma_arr,
             "active_layer_thickness_nm": float(active_layer_thickness_nm),
@@ -1191,6 +1231,14 @@ def compute_power_balance_table(
             "recombination_power_err_w_cm3": p_rec_err_w_cm3,
             "thermalized_power_w_cm3": p_th_w_cm3,
             "thermalized_power_err_w_cm3": p_th_err_w_cm3,
+            "thermalized_power_per_carrier_mb_ev_s": thermalized_power_per_carrier_mb_ev_s,
+            "thermalized_power_per_carrier_mb_err_ev_s": (
+                thermalized_power_per_carrier_mb_err_ev_s
+            ),
+            "thermalized_power_per_carrier_fd_ev_s": thermalized_power_per_carrier_fd_ev_s,
+            "thermalized_power_per_carrier_fd_err_ev_s": (
+                thermalized_power_per_carrier_fd_err_ev_s
+            ),
             "thermalized_power_per_carrier_ev_s": thermalized_power_per_carrier_ev_s,
             "thermalized_power_per_carrier_err_ev_s": thermalized_power_per_carrier_err_ev_s,
             "power_balance_closure_w_cm2": p_abs_w_cm2 - (p_th_w_cm2 + p_rec_w_cm2),

@@ -32,11 +32,13 @@ from .config import (
     MB_VALIDITY_ENABLE,
     MB_VALIDITY_REFERENCE_TEMPERATURES_K,
     MB_VALIDITY_REL_ERROR_LIMIT,
+    POWER_BALANCE_CARRIER_STATISTICS,
     H,
     C,
     PLQY_ETA,
     PLQY_ETA_SIGMA,
     PLQY_RESULTS_CSV,
+    TSAI_DELTA_MU_CARRIER_STATISTICS,
     TSAI_ENABLE_SIMULATION,
     WINDOW_PEAK_OFFSET_EV,
     WINDOW_SEARCH_MAX_EV,
@@ -77,6 +79,14 @@ def _validate_configuration() -> None:
         (
             0 < FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE <= 1,
             "FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE must be in the interval (0, 1].",
+        ),
+        (
+            str(POWER_BALANCE_CARRIER_STATISTICS).strip().lower() in {"mb", "fd"},
+            "POWER_BALANCE_CARRIER_STATISTICS must be either 'fd' or 'mb'.",
+        ),
+        (
+            str(TSAI_DELTA_MU_CARRIER_STATISTICS).strip().lower() in {"mb", "fd"},
+            "TSAI_DELTA_MU_CARRIER_STATISTICS must be either 'fd' or 'mb'.",
         ),
     )
     for is_valid, message in checks:
@@ -333,7 +343,8 @@ def _print_run_summary(
         print(f"Tsai T-CSV:       {tsai_simulation_result.comparison_csv_path}")
         print(
             "Tsai model run:   Eq.41 + Eq.48 | "
-            f"forward grid points={tsai_simulation_result.forward_table_df.shape[0]}"
+            f"forward grid points={tsai_simulation_result.forward_table_df.shape[0]} | "
+            f"delta_mu closure={TSAI_DELTA_MU_CARRIER_STATISTICS}"
         )
     if AUTO_SELECT_FIT_WINDOW:
         print(
@@ -366,7 +377,8 @@ def _print_run_summary(
         rf"PLQY source={plqy_source}, "
         rf"eta=[{np.min(plqy_eta_used):.4f}, {np.max(plqy_eta_used):.4f}], "
         rf"sigma=[{np.min(plqy_eta_sigma_used):.4f}, {np.max(plqy_eta_sigma_used):.4f}], "
-        rf"d={ACTIVE_LAYER_THICKNESS_NM:.1f} nm"
+        rf"d={ACTIVE_LAYER_THICKNESS_NM:.1f} nm, "
+        rf"per-carrier stats={POWER_BALANCE_CARRIER_STATISTICS}"
     )
     if mb_validity_limits_df is not None and (not mb_validity_limits_df.empty):
         finite_limits = mb_validity_limits_df["x_limit"].to_numpy(dtype=float)

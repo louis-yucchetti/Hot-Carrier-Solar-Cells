@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 
-from .analysis import compute_mu_and_density_mb
+from .analysis import compute_mu_and_density_fd, compute_mu_and_density_mb
 from .config import (
     E_CHARGE,
     EG_EV,
@@ -20,6 +20,7 @@ from .config import (
     TSAI_DELTA_MU_GRID_MAX_EV,
     TSAI_DELTA_MU_GRID_MIN_EV,
     TSAI_DELTA_MU_GRID_POINTS,
+    TSAI_DELTA_MU_CARRIER_STATISTICS,
     TSAI_ENABLE_SIMULATION,
     TSAI_EPSILON_INF,
     TSAI_EPSILON_STATIC,
@@ -57,6 +58,7 @@ class TsaiWorkflowResult:
     temperature_grid_k: np.ndarray
     p_th_grid_w_cm3: np.ndarray
     primary_axis_name: str
+    delta_mu_carrier_statistics_model: str
     forward_csv_path: Path
     inverse_csv_path: Path
     samples_csv_path: Path
@@ -232,32 +234,44 @@ def _screened_matrix_element_sq_times_volume_j2(
     return base * screening_factor
 
 
-def _mu_e_from_delta_mu_mb(delta_mu_ev: float, temperature_k: float) -> float:
+def _normalize_statistics_model(statistics_model: str, context: str) -> str:
+    model = str(statistics_model).strip().lower()
+    if model not in {"mb", "fd"}:
+        raise ValueError(f"{context} must be either 'fd' or 'mb'.")
+    return model
+
+
+def _state_from_delta_mu(
+    delta_mu_ev: float,
+    temperature_k: float,
+    statistics_model: str,
+) -> tuple[float, float, float]:
     if (
         (not np.isfinite(delta_mu_ev))
         or (not np.isfinite(temperature_k))
         or (temperature_k <= 0)
     ):
-        return np.nan
-    mu_e_ev, _, _ = compute_mu_and_density_mb(
+        return np.nan, np.nan, np.nan
+
+    model = _normalize_statistics_model(statistics_model, "statistics_model")
+    solver = compute_mu_and_density_fd if model == "fd" else compute_mu_and_density_mb
+    return solver(
         temperature_k=float(temperature_k),
         qfls_ev=float(delta_mu_ev),
+    )
+
+
+def _mu_e_from_delta_mu(
+    delta_mu_ev: float,
+    temperature_k: float,
+    statistics_model: str,
+) -> float:
+    mu_e_ev, _, _ = _state_from_delta_mu(
+        delta_mu_ev=delta_mu_ev,
+        temperature_k=temperature_k,
+        statistics_model=statistics_model,
     )
     return float(mu_e_ev)
-
-
-def _density_from_delta_mu_mb(delta_mu_ev: float, temperature_k: float) -> float:
-    if (
-        (not np.isfinite(delta_mu_ev))
-        or (not np.isfinite(temperature_k))
-        or (temperature_k <= 0)
-    ):
-        return np.nan
-    _, _, n_cm3 = compute_mu_and_density_mb(
-        temperature_k=float(temperature_k),
-        qfls_ev=float(delta_mu_ev),
-    )
-    return float(n_cm3)
 
 
 def _tau_c_lo_q_seconds(
@@ -408,6 +422,7 @@ def _compute_forward_grid(
     temperature_grid_k: np.ndarray,
     q_grid_m1: np.ndarray,
     primary_axis_name: str,
+    delta_mu_to_mu_e: Callable[[float, float], float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     n_axis = primary_axis_values.size
     n_t = temperature_grid_k.size
@@ -419,9 +434,13 @@ def _compute_forward_grid(
     for i, axis_value in enumerate(primary_axis_values):
         for j, temperature_k in enumerate(temperature_grid_k):
             if primary_axis_name == "delta_mu_ev":
-                mu_e_ev = _mu_e_from_delta_mu_mb(
-                    delta_mu_ev=float(axis_value),
-                    temperature_k=float(temperature_k),
+                if delta_mu_to_mu_e is None:
+                    raise ValueError(
+                        "delta_mu_to_mu_e must be provided when primary_axis_name='delta_mu_ev'."
+                    )
+                mu_e_ev = delta_mu_to_mu_e(
+                    float(axis_value),
+                    float(temperature_k),
                 )
             elif primary_axis_name == "mu_e_ev":
                 mu_e_ev = float(axis_value)
@@ -571,41 +590,132 @@ def _build_temperature_predictor(
     return predictor
 
 
+def _build_tsai_maps_for_primary_axis(
+    primary_axis_values: np.ndarray,
+    temperature_grid_k: np.ndarray,
+    q_grid_m1: np.ndarray,
+    primary_axis_name: str,
+    delta_mu_statistics_model: str,
+) -> tuple[
+    np.ndarray,
+    pd.DataFrame,
+    np.ndarray,
+    pd.DataFrame,
+    Callable[[np.ndarray, np.ndarray], np.ndarray],
+]:
+    model = _normalize_statistics_model(
+        delta_mu_statistics_model,
+        "TSAI_DELTA_MU_CARRIER_STATISTICS",
+    )
+    delta_mu_to_mu_e: Callable[[float, float], float] | None = None
+    if primary_axis_name == "delta_mu_ev":
+        delta_mu_to_mu_e = lambda delta_mu_ev, temperature_k: _mu_e_from_delta_mu(
+            delta_mu_ev=delta_mu_ev,
+            temperature_k=temperature_k,
+            statistics_model=model,
+        )
+
+    du_dt_grid_w_cm3, qs_grid_cm1, tau_energy_grid_s, mu_e_grid_ev = _compute_forward_grid(
+        primary_axis_values=primary_axis_values,
+        temperature_grid_k=temperature_grid_k,
+        q_grid_m1=q_grid_m1,
+        primary_axis_name=primary_axis_name,
+        delta_mu_to_mu_e=delta_mu_to_mu_e,
+    )
+    p_th_grid_w_cm3 = np.maximum(-du_dt_grid_w_cm3, 0.0)
+
+    forward_table_df = _forward_grid_to_dataframe(
+        primary_axis_values=primary_axis_values,
+        temperature_grid_k=temperature_grid_k,
+        du_dt_grid_w_cm3=du_dt_grid_w_cm3,
+        qs_grid_cm1=qs_grid_cm1,
+        tau_energy_grid_s=tau_energy_grid_s,
+        mu_e_grid_ev=mu_e_grid_ev,
+        primary_axis_name=primary_axis_name,
+    )
+    if primary_axis_name == "delta_mu_ev":
+        forward_table_df["delta_mu_carrier_statistics_model"] = model
+
+    p_th_axis_w_cm3, temperature_inverse_k = _build_inverse_grid(
+        primary_axis_values=primary_axis_values,
+        temperature_grid_k=temperature_grid_k,
+        p_th_grid_w_cm3=p_th_grid_w_cm3,
+    )
+    inverse_table_df = _inverse_grid_to_dataframe(
+        primary_axis_values=primary_axis_values,
+        p_th_axis_w_cm3=p_th_axis_w_cm3,
+        temperature_inverse_k=temperature_inverse_k,
+        primary_axis_name=primary_axis_name,
+    )
+    if primary_axis_name == "delta_mu_ev":
+        inverse_table_df["delta_mu_carrier_statistics_model"] = model
+
+    predictor = _build_temperature_predictor(
+        primary_axis_values=primary_axis_values,
+        p_th_axis_w_cm3=p_th_axis_w_cm3,
+        temperature_inverse_k=temperature_inverse_k,
+    )
+    return p_th_grid_w_cm3, forward_table_df, p_th_axis_w_cm3, inverse_table_df, predictor
+
+
 def _compute_experimental_state_samples(
     exp_df: pd.DataFrame,
     q_grid_m1: np.ndarray,
+    default_statistics_model: str,
 ) -> pd.DataFrame:
+    default_model = _normalize_statistics_model(
+        default_statistics_model,
+        "TSAI_DELTA_MU_CARRIER_STATISTICS",
+    )
     records: list[dict[str, float]] = []
     for row in exp_df.itertuples(index=False):
-        mu_e_eval = _mu_e_from_delta_mu_mb(
-            delta_mu_ev=float(row.delta_mu_ev),
-            temperature_k=float(row.temperature_k_exp),
-        )
-        du_dt_w_cm3, qs_cm1, tau_energy_s = compute_du_dt_intra_electron_w_cm3(
-            mu_e_ev=mu_e_eval,
-            temperature_k=float(row.temperature_k_exp),
-            q_grid_m1=q_grid_m1,
-            lattice_temperature_k=TSAI_LATTICE_TEMPERATURE_K,
-        )
-        records.append(
-            {
-                "delta_mu_ev": float(row.delta_mu_ev),
-                "temperature_k_exp": float(row.temperature_k_exp),
-                "mu_e_ev_at_exp_state": float(mu_e_eval),
-                "p_th_exp_w_cm3": float(row.p_th_exp_w_cm3),
-                "du_dt_intra_w_cm3_at_exp_state": float(du_dt_w_cm3),
-                "p_th_model_w_cm3_at_exp_state": float(max(-du_dt_w_cm3, 0.0)),
-                "q_s_cm1_at_exp_state": float(qs_cm1),
-                "tau_c_lo_energy_s_at_exp_state": float(tau_energy_s),
-            }
-        )
+        record: dict[str, float | str] = {
+            "delta_mu_ev": float(row.delta_mu_ev),
+            "temperature_k_exp": float(row.temperature_k_exp),
+            "p_th_exp_w_cm3": float(row.p_th_exp_w_cm3),
+            "delta_mu_carrier_statistics_model": default_model,
+        }
+        for model in ("mb", "fd"):
+            mu_e_eval = _mu_e_from_delta_mu(
+                delta_mu_ev=float(row.delta_mu_ev),
+                temperature_k=float(row.temperature_k_exp),
+                statistics_model=model,
+            )
+            du_dt_w_cm3, qs_cm1, tau_energy_s = compute_du_dt_intra_electron_w_cm3(
+                mu_e_ev=mu_e_eval,
+                temperature_k=float(row.temperature_k_exp),
+                q_grid_m1=q_grid_m1,
+                lattice_temperature_k=TSAI_LATTICE_TEMPERATURE_K,
+            )
+            record[f"mu_e_{model}_ev_at_exp_state"] = float(mu_e_eval)
+            record[f"du_dt_intra_{model}_w_cm3_at_exp_state"] = float(du_dt_w_cm3)
+            record[f"p_th_model_{model}_w_cm3_at_exp_state"] = float(
+                max(-du_dt_w_cm3, 0.0)
+            )
+            record[f"q_s_{model}_cm1_at_exp_state"] = float(qs_cm1)
+            record[f"tau_c_lo_energy_{model}_s_at_exp_state"] = float(tau_energy_s)
+
+        record["mu_e_ev_at_exp_state"] = record[f"mu_e_{default_model}_ev_at_exp_state"]
+        record["du_dt_intra_w_cm3_at_exp_state"] = record[
+            f"du_dt_intra_{default_model}_w_cm3_at_exp_state"
+        ]
+        record["p_th_model_w_cm3_at_exp_state"] = record[
+            f"p_th_model_{default_model}_w_cm3_at_exp_state"
+        ]
+        record["q_s_cm1_at_exp_state"] = record[f"q_s_{default_model}_cm1_at_exp_state"]
+        record["tau_c_lo_energy_s_at_exp_state"] = record[
+            f"tau_c_lo_energy_{default_model}_s_at_exp_state"
+        ]
+        records.append(record)
     return pd.DataFrame.from_records(records)
 
 
 def _predict_density_and_mu_e_from_delta_mu(
     delta_mu_ev: np.ndarray,
     temperature_k: np.ndarray,
+    statistics_model: str,
 ) -> tuple[np.ndarray, np.ndarray]:
+    model = _normalize_statistics_model(statistics_model, "statistics_model")
     delta_mu = np.asarray(delta_mu_ev, dtype=float)
     temp = np.asarray(temperature_k, dtype=float)
     n_cm3 = np.full_like(delta_mu, np.nan, dtype=float)
@@ -613,9 +723,10 @@ def _predict_density_and_mu_e_from_delta_mu(
     for i in range(delta_mu.size):
         if (not np.isfinite(delta_mu[i])) or (not np.isfinite(temp[i])) or (temp[i] <= 0):
             continue
-        mu_e_i, _, n_i = compute_mu_and_density_mb(
+        mu_e_i, _, n_i = _state_from_delta_mu(
+            delta_mu_ev=float(delta_mu[i]),
             temperature_k=float(temp[i]),
-            qfls_ev=float(delta_mu[i]),
+            statistics_model=model,
         )
         mu_e[i] = mu_e_i
         n_cm3[i] = n_i
@@ -646,6 +757,11 @@ def run_tsai_temperature_workflow(
     if mode not in {"delta_mu", "mu_e"}:
         raise ValueError("TSAI_PRIMARY_INPUT must be either 'delta_mu' or 'mu_e'.")
     primary_axis_name = "delta_mu_ev" if mode == "delta_mu" else "mu_e_ev"
+    delta_mu_model = _normalize_statistics_model(
+        TSAI_DELTA_MU_CARRIER_STATISTICS,
+        "TSAI_DELTA_MU_CARRIER_STATISTICS",
+    )
+    alternate_delta_mu_model = "mb" if delta_mu_model == "fd" else "fd"
 
     exp_df = results_df.copy()
     exp_df = exp_df.rename(
@@ -653,10 +769,23 @@ def run_tsai_temperature_workflow(
             "qfls_ev": "delta_mu_ev",
             "temperature_k": "temperature_k_exp",
             "thermalized_power_w_cm3": "p_th_exp_w_cm3",
-            "carrier_density_cm3": "carrier_density_exp_cm3",
-            "mu_e_ev": "mu_e_exp_ev",
+            "carrier_density_cm3": "carrier_density_exp_mb_cm3",
+            "carrier_density_fd_cm3": "carrier_density_exp_fd_cm3",
+            "mu_e_ev": "mu_e_exp_mb_ev",
+            "mu_e_fd_ev": "mu_e_exp_fd_ev",
         }
     )
+    default_exp_density_col = f"carrier_density_exp_{delta_mu_model}_cm3"
+    default_exp_mu_e_col = f"mu_e_exp_{delta_mu_model}_ev"
+    fallback_exp_density_col = "carrier_density_exp_mb_cm3"
+    fallback_exp_mu_e_col = "mu_e_exp_mb_ev"
+    if default_exp_density_col not in exp_df.columns:
+        default_exp_density_col = fallback_exp_density_col
+    if default_exp_mu_e_col not in exp_df.columns:
+        default_exp_mu_e_col = fallback_exp_mu_e_col
+    exp_df["carrier_density_exp_cm3"] = exp_df[default_exp_density_col]
+    exp_df["mu_e_exp_ev"] = exp_df[default_exp_mu_e_col]
+    exp_df["delta_mu_carrier_statistics_model"] = delta_mu_model
     required_exp_columns = [
         "spectrum_id",
         "intensity_w_cm2",
@@ -664,9 +793,17 @@ def run_tsai_temperature_workflow(
         "temperature_k_exp",
         "p_th_exp_w_cm3",
         "carrier_density_exp_cm3",
+        "delta_mu_carrier_statistics_model",
     ]
-    if "mu_e_exp_ev" in exp_df.columns:
-        required_exp_columns.append("mu_e_exp_ev")
+    for optional_col in (
+        "carrier_density_exp_mb_cm3",
+        "carrier_density_exp_fd_cm3",
+        "mu_e_exp_ev",
+        "mu_e_exp_mb_ev",
+        "mu_e_exp_fd_ev",
+    ):
+        if optional_col in exp_df.columns:
+            required_exp_columns.append(optional_col)
     exp_df = exp_df[required_exp_columns].copy()
     exp_df = exp_df.replace([np.inf, -np.inf], np.nan).dropna(
         subset=["delta_mu_ev", "temperature_k_exp", "p_th_exp_w_cm3", "carrier_density_exp_cm3"]
@@ -714,49 +851,31 @@ def run_tsai_temperature_workflow(
         dtype=float,
     )
 
-    du_dt_grid_w_cm3, qs_grid_cm1, tau_energy_grid_s, mu_e_grid_ev = _compute_forward_grid(
+    (
+        p_th_grid_w_cm3,
+        forward_table_df,
+        p_th_axis_w_cm3,
+        inverse_table_df,
+        predictor,
+    ) = _build_tsai_maps_for_primary_axis(
         primary_axis_values=primary_axis_values,
         temperature_grid_k=temperature_grid_k,
         q_grid_m1=q_grid_m1,
         primary_axis_name=primary_axis_name,
-    )
-    p_th_grid_w_cm3 = np.maximum(-du_dt_grid_w_cm3, 0.0)
-
-    forward_table_df = _forward_grid_to_dataframe(
-        primary_axis_values=primary_axis_values,
-        temperature_grid_k=temperature_grid_k,
-        du_dt_grid_w_cm3=du_dt_grid_w_cm3,
-        qs_grid_cm1=qs_grid_cm1,
-        tau_energy_grid_s=tau_energy_grid_s,
-        mu_e_grid_ev=mu_e_grid_ev,
-        primary_axis_name=primary_axis_name,
+        delta_mu_statistics_model=delta_mu_model,
     )
     forward_csv_path = out_dir / "tsai_forward_stateT_to_pth.csv"
     forward_table_df.to_csv(forward_csv_path, index=False)
 
-    samples_df = _compute_experimental_state_samples(exp_df=exp_df, q_grid_m1=q_grid_m1)
+    samples_df = _compute_experimental_state_samples(
+        exp_df=exp_df,
+        q_grid_m1=q_grid_m1,
+        default_statistics_model=delta_mu_model,
+    )
     samples_csv_path = out_dir / "tsai_du_dt_samples_at_experimental_state.csv"
     samples_df.to_csv(samples_csv_path, index=False)
-
-    p_th_axis_w_cm3, temperature_inverse_k = _build_inverse_grid(
-        primary_axis_values=primary_axis_values,
-        temperature_grid_k=temperature_grid_k,
-        p_th_grid_w_cm3=p_th_grid_w_cm3,
-    )
-    inverse_table_df = _inverse_grid_to_dataframe(
-        primary_axis_values=primary_axis_values,
-        p_th_axis_w_cm3=p_th_axis_w_cm3,
-        temperature_inverse_k=temperature_inverse_k,
-        primary_axis_name=primary_axis_name,
-    )
     inverse_csv_path = out_dir / "tsai_inverse_pth_state_to_temperature.csv"
     inverse_table_df.to_csv(inverse_csv_path, index=False)
-
-    predictor = _build_temperature_predictor(
-        primary_axis_values=primary_axis_values,
-        p_th_axis_w_cm3=p_th_axis_w_cm3,
-        temperature_inverse_k=temperature_inverse_k,
-    )
     if mode == "delta_mu":
         primary_exp = exp_df["delta_mu_ev"].to_numpy(dtype=float)
     else:
@@ -776,14 +895,70 @@ def run_tsai_temperature_workflow(
     n_sim_cm3, mu_e_sim_ev = _predict_density_and_mu_e_from_delta_mu(
         delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
         temperature_k=exp_df["temperature_sim_k"].to_numpy(dtype=float),
+        statistics_model=delta_mu_model,
     )
     exp_df["carrier_density_sim_cm3"] = n_sim_cm3
     exp_df["mu_e_sim_ev"] = mu_e_sim_ev
-    if "mu_e_exp_ev" not in exp_df.columns:
-        exp_df["mu_e_exp_ev"] = _predict_density_and_mu_e_from_delta_mu(
-            delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
-            temperature_k=exp_df["temperature_k_exp"].to_numpy(dtype=float),
-        )[1]
+    exp_df["carrier_density_sim_mb_cm3"], exp_df["mu_e_sim_mb_ev"] = _predict_density_and_mu_e_from_delta_mu(
+        delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
+        temperature_k=exp_df["temperature_sim_k"].to_numpy(dtype=float),
+        statistics_model="mb",
+    )
+    exp_df["carrier_density_sim_fd_cm3"], exp_df["mu_e_sim_fd_ev"] = _predict_density_and_mu_e_from_delta_mu(
+        delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
+        temperature_k=exp_df["temperature_sim_k"].to_numpy(dtype=float),
+        statistics_model="fd",
+    )
+    exp_df["mu_e_exp_mb_ev"] = _predict_density_and_mu_e_from_delta_mu(
+        delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
+        temperature_k=exp_df["temperature_k_exp"].to_numpy(dtype=float),
+        statistics_model="mb",
+    )[1]
+    exp_df["mu_e_exp_fd_ev"] = _predict_density_and_mu_e_from_delta_mu(
+        delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
+        temperature_k=exp_df["temperature_k_exp"].to_numpy(dtype=float),
+        statistics_model="fd",
+    )[1]
+    exp_df["carrier_density_exp_mb_cm3"] = _predict_density_and_mu_e_from_delta_mu(
+        delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
+        temperature_k=exp_df["temperature_k_exp"].to_numpy(dtype=float),
+        statistics_model="mb",
+    )[0]
+    exp_df["carrier_density_exp_fd_cm3"] = _predict_density_and_mu_e_from_delta_mu(
+        delta_mu_ev=exp_df["delta_mu_ev"].to_numpy(dtype=float),
+        temperature_k=exp_df["temperature_k_exp"].to_numpy(dtype=float),
+        statistics_model="fd",
+    )[0]
+
+    if mode == "delta_mu":
+        (
+            _,
+            _forward_table_alt_df,
+            _,
+            _inverse_table_alt_df,
+            predictor_alt,
+        ) = _build_tsai_maps_for_primary_axis(
+            primary_axis_values=primary_axis_values,
+            temperature_grid_k=temperature_grid_k,
+            q_grid_m1=q_grid_m1,
+            primary_axis_name=primary_axis_name,
+            delta_mu_statistics_model=alternate_delta_mu_model,
+        )
+        temperature_sim_alt_k = predictor_alt(primary_exp, exp_p_th)
+        exp_df[f"temperature_sim_{delta_mu_model}_k"] = exp_df["temperature_sim_k"]
+        exp_df[f"temperature_error_{delta_mu_model}_k"] = exp_df["temperature_error_k"]
+        exp_df[f"temperature_rise_sim_{delta_mu_model}_k"] = exp_df["temperature_rise_sim_k"]
+        exp_df[f"temperature_sim_{alternate_delta_mu_model}_k"] = temperature_sim_alt_k
+        exp_df[f"temperature_error_{alternate_delta_mu_model}_k"] = (
+            temperature_sim_alt_k - exp_df["temperature_k_exp"]
+        )
+        exp_df[f"temperature_rise_sim_{alternate_delta_mu_model}_k"] = (
+            temperature_sim_alt_k - TSAI_LATTICE_TEMPERATURE_K
+        )
+    else:
+        exp_df[f"temperature_sim_{delta_mu_model}_k"] = exp_df["temperature_sim_k"]
+        exp_df[f"temperature_error_{delta_mu_model}_k"] = exp_df["temperature_error_k"]
+        exp_df[f"temperature_rise_sim_{delta_mu_model}_k"] = exp_df["temperature_rise_sim_k"]
 
     comparison_csv_path = out_dir / "tsai_temperature_comparison.csv"
     exp_df.to_csv(comparison_csv_path, index=False)
@@ -796,6 +971,7 @@ def run_tsai_temperature_workflow(
         temperature_grid_k=temperature_grid_k,
         p_th_grid_w_cm3=p_th_grid_w_cm3,
         primary_axis_name=primary_axis_name,
+        delta_mu_carrier_statistics_model=delta_mu_model,
         forward_csv_path=forward_csv_path,
         inverse_csv_path=inverse_csv_path,
         samples_csv_path=samples_csv_path,

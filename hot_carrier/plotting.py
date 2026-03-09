@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib import cm
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, Normalize
 from matplotlib.lines import Line2D
 from matplotlib.ticker import AutoMinorLocator, LogLocator, NullFormatter
 from matplotlib.tri import Triangulation
@@ -500,11 +500,21 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
 
 
 def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) -> None:
-    n_cm3 = results_df["carrier_density_cm3"].to_numpy(dtype=float)
-    n_err_cm3 = _sanitize_nonnegative(
+    n_mb_cm3 = results_df["carrier_density_cm3"].to_numpy(dtype=float)
+    n_mb_err_cm3 = _sanitize_nonnegative(
         results_df.get(
             "carrier_density_err_total_cm3",
             pd.Series(np.zeros(results_df.shape[0], dtype=float)),
+        ).to_numpy(dtype=float)
+    )
+    n_fd_cm3 = results_df.get(
+        "carrier_density_fd_cm3",
+        pd.Series(n_mb_cm3, index=results_df.index),
+    ).to_numpy(dtype=float)
+    n_fd_err_cm3 = _sanitize_nonnegative(
+        results_df.get(
+            "carrier_density_fd_err_total_cm3",
+            pd.Series(n_mb_err_cm3, index=results_df.index),
         ).to_numpy(dtype=float)
     )
     temperature_k = results_df["temperature_k"].to_numpy(dtype=float)
@@ -521,40 +531,87 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
             pd.Series(np.zeros(results_df.shape[0], dtype=float)),
         ).to_numpy(dtype=float)
     )
-    p_th_per_carrier_ev_s = results_df["thermalized_power_per_carrier_ev_s"].to_numpy(dtype=float)
-    p_th_per_carrier_err_ev_s = _sanitize_nonnegative(
+    default_model = "mb"
+    if (
+        "power_balance_carrier_statistics_model" in results_df.columns
+        and (not results_df.empty)
+    ):
+        default_model = str(
+            results_df["power_balance_carrier_statistics_model"].iloc[0]
+        ).strip().lower()
+    p_th_per_carrier_mb_ev_s = results_df.get(
+        "thermalized_power_per_carrier_mb_ev_s",
         results_df.get(
-            "thermalized_power_per_carrier_err_ev_s",
-            pd.Series(np.zeros(results_df.shape[0], dtype=float)),
+            "thermalized_power_per_carrier_ev_s",
+            pd.Series(np.full(results_df.shape[0], np.nan, dtype=float)),
+        ),
+    ).to_numpy(dtype=float)
+    p_th_per_carrier_mb_err_ev_s = _sanitize_nonnegative(
+        results_df.get(
+            "thermalized_power_per_carrier_mb_err_ev_s",
+            results_df.get(
+                "thermalized_power_per_carrier_err_ev_s",
+                pd.Series(np.zeros(results_df.shape[0], dtype=float)),
+            ),
+        ).to_numpy(dtype=float)
+    )
+    p_th_per_carrier_fd_ev_s = results_df.get(
+        "thermalized_power_per_carrier_fd_ev_s",
+        results_df.get(
+            "thermalized_power_per_carrier_ev_s",
+            pd.Series(np.full(results_df.shape[0], np.nan, dtype=float)),
+        ),
+    ).to_numpy(dtype=float)
+    p_th_per_carrier_fd_err_ev_s = _sanitize_nonnegative(
+        results_df.get(
+            "thermalized_power_per_carrier_fd_err_ev_s",
+            results_df.get(
+                "thermalized_power_per_carrier_err_ev_s",
+                pd.Series(np.zeros(results_df.shape[0], dtype=float)),
+            ),
         ).to_numpy(dtype=float)
     )
     thermalized_energy_pair_ev = results_df["thermalized_energy_per_pair_ev"].to_numpy(dtype=float)
     intensity_w_cm2 = results_df["intensity_w_cm2"].to_numpy(dtype=float)
 
-    valid = (
-        np.isfinite(n_cm3)
-        & np.isfinite(temperature_k)
+    valid_common = (
+        np.isfinite(temperature_k)
         & np.isfinite(p_th_w_cm3)
-        & np.isfinite(p_th_per_carrier_ev_s)
         & np.isfinite(thermalized_energy_pair_ev)
-        & (n_cm3 > 0)
         & (temperature_k > 0)
         & (p_th_w_cm3 > 0)
-        & (p_th_per_carrier_ev_s > 0)
     )
-    if np.count_nonzero(valid) < 3:
+    if np.count_nonzero(valid_common) < 3:
         return
 
-    n_plot = n_cm3[valid]
-    n_err_plot = n_err_cm3[valid]
-    t_plot = temperature_k[valid]
-    t_err_plot = temperature_err_k[valid]
-    p_th_plot = p_th_w_cm3[valid]
-    p_th_err_plot = p_th_err_w_cm3[valid]
-    p_th_per_carrier_plot = p_th_per_carrier_ev_s[valid]
-    p_th_per_carrier_err_plot = p_th_per_carrier_err_ev_s[valid]
-    thermalized_energy_plot = thermalized_energy_pair_ev[valid]
-    intensity_plot = intensity_w_cm2[valid]
+    valid_mb_state = valid_common & np.isfinite(n_mb_cm3) & (n_mb_cm3 > 0)
+    valid_fd_state = valid_common & np.isfinite(n_fd_cm3) & (n_fd_cm3 > 0)
+    valid_mb_per_carrier = (
+        valid_mb_state
+        & np.isfinite(p_th_per_carrier_mb_ev_s)
+        & (p_th_per_carrier_mb_ev_s > 0)
+    )
+    valid_fd_per_carrier = (
+        valid_fd_state
+        & np.isfinite(p_th_per_carrier_fd_ev_s)
+        & (p_th_per_carrier_fd_ev_s > 0)
+    )
+    valid_thermal = (
+        valid_common
+        & np.isfinite(intensity_w_cm2)
+        & (intensity_w_cm2 > 0)
+    )
+    if (
+        max(np.count_nonzero(valid_mb_state), np.count_nonzero(valid_fd_state)) < 3
+        or np.count_nonzero(valid_thermal) < 3
+    ):
+        return
+
+    temp_all = temperature_k[valid_common]
+    temp_norm = Normalize(
+        vmin=float(np.min(temp_all)),
+        vmax=float(np.max(temp_all) + (1e-9 if np.max(temp_all) == np.min(temp_all) else 0.0)),
+    )
 
     fig, axes = plt.subplots(
         2,
@@ -564,42 +621,107 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     ax00, ax01 = axes[0]
     ax10, ax11 = axes[1]
 
-    ax00.errorbar(
-        n_plot,
-        p_th_plot,
-        xerr=n_err_plot,
-        yerr=_safe_log_yerr(y=p_th_plot, err=p_th_err_plot),
-        fmt="none",
-        ecolor="0.6",
-        alpha=0.35,
-        elinewidth=0.8,
-        capsize=1.8,
-        zorder=1,
-    )
-    s00 = ax00.scatter(
-        n_plot,
-        p_th_plot,
-        c=t_plot,
-        cmap="viridis",
-        s=56,
-        edgecolors="white",
-        linewidths=0.5,
-        zorder=2,
-    )
+    if np.count_nonzero(valid_mb_state) > 0:
+        ax00.errorbar(
+            n_mb_cm3[valid_mb_state],
+            p_th_w_cm3[valid_mb_state],
+            xerr=n_mb_err_cm3[valid_mb_state],
+            yerr=_safe_log_yerr(
+                y=p_th_w_cm3[valid_mb_state],
+                err=p_th_err_w_cm3[valid_mb_state],
+            ),
+            fmt="none",
+            ecolor="#90a4ae",
+            alpha=0.22,
+            elinewidth=0.7,
+            capsize=1.5,
+            zorder=1,
+        )
+        ax00.scatter(
+            n_mb_cm3[valid_mb_state],
+            p_th_w_cm3[valid_mb_state],
+            c=temperature_k[valid_mb_state],
+            cmap="viridis",
+            norm=temp_norm,
+            s=42,
+            marker="o",
+            edgecolors="white",
+            linewidths=0.45,
+            alpha=0.58,
+            zorder=2,
+        )
+    if np.count_nonzero(valid_fd_state) > 0:
+        ax00.errorbar(
+            n_fd_cm3[valid_fd_state],
+            p_th_w_cm3[valid_fd_state],
+            xerr=n_fd_err_cm3[valid_fd_state],
+            yerr=_safe_log_yerr(
+                y=p_th_w_cm3[valid_fd_state],
+                err=p_th_err_w_cm3[valid_fd_state],
+            ),
+            fmt="none",
+            ecolor="#455a64",
+            alpha=0.28,
+            elinewidth=0.8,
+            capsize=1.7,
+            zorder=2,
+        )
+        ax00.scatter(
+            n_fd_cm3[valid_fd_state],
+            p_th_w_cm3[valid_fd_state],
+            c=temperature_k[valid_fd_state],
+            cmap="viridis",
+            norm=temp_norm,
+            s=58,
+            marker="^",
+            edgecolors="black",
+            linewidths=0.4,
+            alpha=0.92,
+            zorder=3,
+        )
     style_axes(ax00, logx=True, logy=True)
     ax00.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
     ax00.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
-    ax00.set_title(r"Volumetric thermalized power across carrier states")
-    cbar00 = fig.colorbar(s00, ax=ax00, pad=0.02, fraction=0.05)
+    ax00.set_title(r"Volumetric thermalized power: MB vs FD carrier-state map")
+    ax00.legend(
+        handles=[
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                linestyle="none",
+                markerfacecolor="white",
+                markeredgecolor="0.35",
+                markersize=5.5,
+                label="MB density",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="^",
+                linestyle="none",
+                markerfacecolor="0.25",
+                markeredgecolor="black",
+                markersize=6.0,
+                label=f"FD density ({'default' if default_model == 'fd' else 'comparison'})",
+            ),
+        ],
+        loc="best",
+        fontsize=LEGEND_FONT_SIZE,
+    )
+    cbar00 = fig.colorbar(cm.ScalarMappable(norm=temp_norm, cmap="viridis"), ax=ax00, pad=0.02, fraction=0.05)
     _style_colorbar(cbar00, "Temperature (K)")
     _add_panel_label(ax00, "(a)")
 
-    norm_n = LogNorm(vmin=float(np.min(n_plot)), vmax=float(np.max(n_plot)))
+    n_default = n_fd_cm3 if default_model == "fd" else n_mb_cm3
+    valid_default = valid_fd_state if default_model == "fd" else valid_mb_state
+    n_default_plot = n_default[valid_default]
+    norm_n = LogNorm(vmin=float(np.min(n_default_plot)), vmax=float(np.max(n_default_plot)))
     ax01.errorbar(
-        t_plot,
-        p_th_plot,
-        xerr=t_err_plot,
-        yerr=_safe_log_yerr(y=p_th_plot, err=p_th_err_plot),
+        temperature_k[valid_default],
+        p_th_w_cm3[valid_default],
+        xerr=temperature_err_k[valid_default],
+        yerr=_safe_log_yerr(y=p_th_w_cm3[valid_default], err=p_th_err_w_cm3[valid_default]),
         fmt="none",
         ecolor="0.6",
         alpha=0.35,
@@ -608,9 +730,9 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         zorder=1,
     )
     s01 = ax01.scatter(
-        t_plot,
-        p_th_plot,
-        c=n_plot,
+        temperature_k[valid_default],
+        p_th_w_cm3[valid_default],
+        c=n_default_plot,
         cmap="cividis",
         norm=norm_n,
         s=56,
@@ -621,46 +743,113 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     style_axes(ax01, logy=True)
     ax01.set_xlabel("Carrier temperature, $T$ (K)")
     ax01.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
-    ax01.set_title(r"Thermalized power versus carrier temperature")
+    ax01.set_title(
+        rf"Thermalized power versus carrier temperature (color = $n_{{\mathrm{{{default_model.upper()}}}}}$)"
+    )
     cbar01 = fig.colorbar(s01, ax=ax01, pad=0.02, fraction=0.05)
     _style_colorbar(cbar01, r"$n$ (cm$^{-3}$)")
     _add_panel_label(ax01, "(b)")
 
-    ax10.errorbar(
-        n_plot,
-        p_th_per_carrier_plot,
-        xerr=n_err_plot,
-        yerr=_safe_log_yerr(y=p_th_per_carrier_plot, err=p_th_per_carrier_err_plot),
-        fmt="none",
-        ecolor="0.6",
-        alpha=0.35,
-        elinewidth=0.8,
-        capsize=1.8,
-        zorder=1,
-    )
-    s10 = ax10.scatter(
-        n_plot,
-        p_th_per_carrier_plot,
-        c=t_plot,
-        cmap="plasma",
-        s=56,
-        edgecolors="white",
-        linewidths=0.5,
-        zorder=2,
-    )
+    if np.count_nonzero(valid_mb_per_carrier) > 0:
+        ax10.errorbar(
+            n_mb_cm3[valid_mb_per_carrier],
+            p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
+            xerr=n_mb_err_cm3[valid_mb_per_carrier],
+            yerr=_safe_log_yerr(
+                y=p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
+                err=p_th_per_carrier_mb_err_ev_s[valid_mb_per_carrier],
+            ),
+            fmt="none",
+            ecolor="#8e24aa",
+            alpha=0.22,
+            elinewidth=0.7,
+            capsize=1.5,
+            zorder=1,
+        )
+        ax10.scatter(
+            n_mb_cm3[valid_mb_per_carrier],
+            p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
+            c=temperature_k[valid_mb_per_carrier],
+            cmap="plasma",
+            norm=temp_norm,
+            s=42,
+            marker="o",
+            edgecolors="white",
+            linewidths=0.45,
+            alpha=0.58,
+            zorder=2,
+        )
+    if np.count_nonzero(valid_fd_per_carrier) > 0:
+        ax10.errorbar(
+            n_fd_cm3[valid_fd_per_carrier],
+            p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
+            xerr=n_fd_err_cm3[valid_fd_per_carrier],
+            yerr=_safe_log_yerr(
+                y=p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
+                err=p_th_per_carrier_fd_err_ev_s[valid_fd_per_carrier],
+            ),
+            fmt="none",
+            ecolor="#4a148c",
+            alpha=0.28,
+            elinewidth=0.8,
+            capsize=1.7,
+            zorder=2,
+        )
+        ax10.scatter(
+            n_fd_cm3[valid_fd_per_carrier],
+            p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
+            c=temperature_k[valid_fd_per_carrier],
+            cmap="plasma",
+            norm=temp_norm,
+            s=58,
+            marker="^",
+            edgecolors="black",
+            linewidths=0.4,
+            alpha=0.92,
+            zorder=3,
+        )
     style_axes(ax10, logx=True, logy=True)
     ax10.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
     ax10.set_ylabel(r"$P_{\mathrm{th}}/n$ (eV s$^{-1}$ carrier$^{-1}$)")
-    ax10.set_title(r"Per-carrier cooling rate versus carrier density")
-    cbar10 = fig.colorbar(s10, ax=ax10, pad=0.02, fraction=0.05)
+    ax10.set_title(r"Per-carrier cooling rate: MB vs FD")
+    ax10.legend(
+        handles=[
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                linestyle="none",
+                markerfacecolor="white",
+                markeredgecolor="0.35",
+                markersize=5.5,
+                label="MB per carrier",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="^",
+                linestyle="none",
+                markerfacecolor="0.25",
+                markeredgecolor="black",
+                markersize=6.0,
+                label=f"FD per carrier ({'default' if default_model == 'fd' else 'comparison'})",
+            ),
+        ],
+        loc="best",
+        fontsize=LEGEND_FONT_SIZE,
+    )
+    cbar10 = fig.colorbar(cm.ScalarMappable(norm=temp_norm, cmap="plasma"), ax=ax10, pad=0.02, fraction=0.05)
     _style_colorbar(cbar10, "Temperature (K)")
     _add_panel_label(ax10, "(c)")
 
-    intensity_norm = LogNorm(vmin=float(np.min(intensity_plot)), vmax=float(np.max(intensity_plot)))
+    intensity_norm = LogNorm(
+        vmin=float(np.min(intensity_w_cm2[valid_thermal])),
+        vmax=float(np.max(intensity_w_cm2[valid_thermal])),
+    )
     ax11.errorbar(
-        t_plot,
-        thermalized_energy_plot,
-        xerr=t_err_plot,
+        temperature_k[valid_thermal],
+        thermalized_energy_pair_ev[valid_thermal],
+        xerr=temperature_err_k[valid_thermal],
         fmt="none",
         ecolor="0.6",
         alpha=0.35,
@@ -669,9 +858,9 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         zorder=1,
     )
     s11 = ax11.scatter(
-        t_plot,
-        thermalized_energy_plot,
-        c=intensity_plot,
+        temperature_k[valid_thermal],
+        thermalized_energy_pair_ev[valid_thermal],
+        c=intensity_w_cm2[valid_thermal],
         cmap="magma",
         norm=intensity_norm,
         s=56,
@@ -686,7 +875,11 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         eta_finite = np.array([0.0], dtype=float)
     eta_min = float(np.min(eta_finite))
     eta_max = float(np.max(eta_finite))
-    t_line = np.linspace(float(np.min(t_plot)) * 0.98, float(np.max(t_plot)) * 1.02, 160)
+    t_line = np.linspace(
+        float(np.min(temperature_k[valid_thermal])) * 0.98,
+        float(np.max(temperature_k[valid_thermal])) * 1.02,
+        160,
+    )
     if abs(eta_max - eta_min) < 1e-9:
         delta_e_line = e_laser_ev - (
             EG_EV + (3.0 - 2.0 * eta_min) * (K_B / E_CHARGE) * t_line
@@ -1070,6 +1263,190 @@ def plot_tsai_temperature_rise_vs_pth_density(
     outpath: Path,
 ) -> None:
     df = tsai_result.experimental_prediction_df.copy()
+    default_model = str(tsai_result.delta_mu_carrier_statistics_model).strip().lower()
+    dual_model_comparison = (
+        tsai_result.primary_axis_name == "delta_mu_ev"
+        and {
+            "temperature_rise_sim_mb_k",
+            "temperature_rise_sim_fd_k",
+            "carrier_density_sim_mb_cm3",
+            "carrier_density_sim_fd_cm3",
+        }.issubset(df.columns)
+    )
+
+    if dual_model_comparison:
+        needed = [
+            "p_th_exp_w_cm3",
+            "temperature_rise_exp_k",
+            "temperature_rise_sim_mb_k",
+            "temperature_rise_sim_fd_k",
+            "carrier_density_exp_cm3",
+            "carrier_density_sim_mb_cm3",
+            "carrier_density_sim_fd_cm3",
+        ]
+        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=needed)
+        if df.shape[0] < 2:
+            return
+
+        pth = df["p_th_exp_w_cm3"].to_numpy(dtype=float)
+        dT_exp = df["temperature_rise_exp_k"].to_numpy(dtype=float)
+        dT_mb = df["temperature_rise_sim_mb_k"].to_numpy(dtype=float)
+        dT_fd = df["temperature_rise_sim_fd_k"].to_numpy(dtype=float)
+        n_exp = df["carrier_density_exp_cm3"].to_numpy(dtype=float)
+        n_mb = df["carrier_density_sim_mb_cm3"].to_numpy(dtype=float)
+        n_fd = df["carrier_density_sim_fd_cm3"].to_numpy(dtype=float)
+
+        valid = (
+            np.isfinite(pth)
+            & (pth > 0)
+            & np.isfinite(dT_exp)
+            & np.isfinite(dT_mb)
+            & np.isfinite(dT_fd)
+            & np.isfinite(n_exp)
+            & np.isfinite(n_mb)
+            & np.isfinite(n_fd)
+            & (n_exp > 0)
+            & (n_mb > 0)
+            & (n_fd > 0)
+        )
+        if np.count_nonzero(valid) < 2:
+            return
+
+        pth = pth[valid]
+        dT_exp = dT_exp[valid]
+        dT_mb = dT_mb[valid]
+        dT_fd = dT_fd[valid]
+        n_exp = n_exp[valid]
+        n_mb = n_mb[valid]
+        n_fd = n_fd[valid]
+
+        n_all = np.concatenate([n_exp, n_mb, n_fd])
+        n_norm = LogNorm(vmin=float(np.min(n_all)), vmax=float(np.max(n_all)))
+        cmap = cm.viridis
+
+        fig, (ax0, ax1) = plt.subplots(
+            2,
+            1,
+            figsize=_page_single_column_figsize(PAGE_MEDIUM_FIG_HEIGHT_IN),
+            sharex=True,
+            gridspec_kw={"height_ratios": [3.0, 1.5], "hspace": 0.08},
+        )
+        for x, y_exp, y_fd, y_mb in zip(pth, dT_exp, dT_fd, dT_mb, strict=True):
+            ax0.plot([x, x], [y_exp, y_fd], color="#37474f", lw=0.9, alpha=0.25, zorder=1)
+            ax0.plot([x, x], [y_exp, y_mb], color="#8e24aa", lw=0.8, alpha=0.18, zorder=1)
+
+        ax0.scatter(
+            pth,
+            dT_exp,
+            c=n_exp,
+            cmap=cmap,
+            norm=n_norm,
+            s=58,
+            marker="o",
+            edgecolors="white",
+            linewidths=0.6,
+            label="Experimental",
+            zorder=3,
+        )
+        ax0.scatter(
+            pth,
+            dT_fd,
+            c=n_fd,
+            cmap=cmap,
+            norm=n_norm,
+            s=64,
+            marker="^",
+            edgecolors="black",
+            linewidths=0.5,
+            label=f"Tsai simulated (FD{' default' if default_model == 'fd' else ''})",
+            zorder=4,
+        )
+        ax0.scatter(
+            pth,
+            dT_mb,
+            c=n_mb,
+            cmap=cmap,
+            norm=n_norm,
+            s=52,
+            marker="s",
+            edgecolors="white",
+            linewidths=0.5,
+            alpha=0.70,
+            label=f"Tsai simulated (MB{' default' if default_model == 'mb' else ''})",
+            zorder=3,
+        )
+
+        style_axes(ax0, logx=True)
+        ax0.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
+        ax0.set_title(r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ with MB/FD Tsai closures")
+        ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+
+        delta_t_fd = dT_fd - dT_exp
+        delta_t_mb = dT_mb - dT_exp
+        ax1.axhline(0.0, color="0.25", lw=1.0, ls="--", zorder=1)
+        ax1.scatter(
+            pth,
+            delta_t_fd,
+            c=n_fd,
+            cmap=cmap,
+            norm=n_norm,
+            s=52,
+            marker="^",
+            edgecolors="black",
+            linewidths=0.45,
+            zorder=4,
+            label="FD residual",
+        )
+        ax1.scatter(
+            pth,
+            delta_t_mb,
+            c=n_mb,
+            cmap=cmap,
+            norm=n_norm,
+            s=44,
+            marker="s",
+            edgecolors="white",
+            linewidths=0.45,
+            alpha=0.72,
+            zorder=3,
+            label="MB residual",
+        )
+        style_axes(ax1, logx=True)
+        ax1.set_xlabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+        ax1.set_ylabel(r"$\Delta T_{\mathrm{sim-exp}}$ (K)")
+        ax1.set_title(r"Residual diagnostic")
+        ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+
+        sm = cm.ScalarMappable(norm=n_norm, cmap=cmap)
+        cbar = fig.colorbar(sm, ax=[ax0, ax1], pad=0.02, fraction=0.04)
+        _style_colorbar(cbar, r"Carrier density, $n$ (cm$^{-3}$)")
+
+        mae_fd = float(np.nanmean(np.abs(delta_t_fd)))
+        bias_fd = float(np.nanmean(delta_t_fd))
+        mae_mb = float(np.nanmean(np.abs(delta_t_mb)))
+        bias_mb = float(np.nanmean(delta_t_mb))
+        ax1.text(
+            0.03,
+            0.96,
+            f"FD: MAE={mae_fd:.2f} K, Bias={bias_fd:.2f} K\n"
+            f"MB: MAE={mae_mb:.2f} K, Bias={bias_mb:.2f} K",
+            transform=ax1.transAxes,
+            ha="left",
+            va="top",
+            fontsize=ANNOTATION_FONT_SIZE,
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "0.35",
+                "boxstyle": "square,pad=0.2",
+                "alpha": 0.92,
+            },
+        )
+
+        fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.93, hspace=0.10)
+        save_figure(fig, outpath)
+        plt.close(fig)
+        return
+
     needed = [
         "p_th_exp_w_cm3",
         "temperature_rise_exp_k",
