@@ -274,6 +274,12 @@ The fit-window term is not a Bayesian posterior. It is an objective
 window-sensitivity metric built from the AICc-weighted spread of acceptable
 windows around the chosen one.
 
+Importantly, the reported `range` uncertainty is computed from the full
+AICc-weighted ensemble of acceptable windows. The setting
+`FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE` only controls how much cumulative AICc
+weight is shown in the plotted fit-window envelope, with `0.95` used as a
+visual default. It does not truncate the uncertainty calculation itself.
+
 The uncertainties are exported as separate columns in `fit_results.csv`, for
 example:
 
