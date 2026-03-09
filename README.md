@@ -473,87 +473,385 @@ gradients, diffusion, or a microscopic treatment of all recombination channels.
 
 ## 10. Tsai Eq. 41 Plus Eq. 48 Cooling Workflow
 
-### 10.1 What is implemented
+### 10.1 What this section is really about
 
-The internal Tsai workflow in `hot_carrier/tsai_model.py` implements an
-electron-only intraband LO-phonon cooling model based on Tsai 2018 Eq. 41 and
-Eq. 48.
+The repository does **not** implement Tsai's full photovoltaic-device model in
+the same self-consistent way as the paper. What it does implement is the
+electron intraband cooling kernel from the paper and then compare that kernel to
+the experimentally inferred thermalized-power channel.
 
-In the current implementation, the code:
+That distinction matters.
 
-1. Builds a forward table from state variables to modeled thermalized power.
-2. Numerically inverts that table to obtain temperature as a function of
-   thermalized power and state.
-3. Evaluates the inverse model at the experimental points.
-4. Compares simulated and measured temperature rise.
-
-### 10.2 Why the default inversion uses `Delta_mu`
-
-By default, `TSAI_PRIMARY_INPUT = "delta_mu"`. That choice matters. If one were
-to use the experimental `mu_e` directly as an independent variable, one would be
-feeding a quantity into the model that already depends on the measured `T`.
-
-To avoid that leakage, the default workflow uses the experimental `Delta_mu` and
-reconstructs `mu_e(Delta_mu, T)` internally from the same optical state using a
-configurable carrier-statistics closure. The current default is
-`TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`, while MB comparison columns are also
-exported for side-by-side inspection.
-
-That logic is implemented in:
-
-- `hot_carrier.tsai_model._mu_e_from_delta_mu()`,
-- `hot_carrier.tsai_model._compute_forward_grid()`,
-- `hot_carrier.tsai_model.run_tsai_temperature_workflow()`.
-
-### 10.3 Forward model
-
-The forward model evaluates the LO-phonon cooling rate and converts it into a
-modeled thermalized power density:
+In the paper, the starting point is the carrier energy-density balance
+(Tsai Eq. 3):
 
 ```text
-P_th_model = - (du/dt)_intra
+du/dt = (1/L) * (p_gen - p_rec - J·V) + (du/dt)_intra
 ```
 
-The code includes:
+where:
 
-- LO-phonon energy and lifetime,
-- static screening if enabled,
-- either MB or finite-difference FD screening derivatives,
-- numerical integration over the `q` range set in `hot_carrier/config.py`.
+- `u` is carrier energy density,
+- `p_gen` is the incoming optical power flux,
+- `p_rec` is the interband recombination power flux,
+- `J·V` is the extracted electrical power flux,
+- `L` is the active-region thickness,
+- `(du/dt)_intra` is the intraband carrier cooling term, dominated here by
+  electron interaction with LO phonons.
 
-### 10.4 Inverse map and comparison
-
-For each fixed primary-axis value, the code builds:
+At steady state, Eq. 3 becomes
 
 ```text
-(state, T) -> P_th_model
+- (du/dt)_intra = (p_gen - p_rec - J·V) / L
 ```
 
-then inverts that relation to obtain:
+Tsai uses that relation inside a device model. This repository uses it in a
+more restricted way:
+
+1. The optical analysis first infers an experimental thermalized power density
+   `P_th_exp` from the PL data.
+2. The Tsai workflow computes a modeled intraband cooling power density
+   `P_th_model = - (du/dt)_intra`.
+3. The comparison is then made through the identification
 
 ```text
-(state, P_th) -> T
+P_th_exp  ~=  - (du/dt)_intra
 ```
 
-Interpolation is performed in `(state, log10(P_th))`, with nearest-neighbor
-fallback outside the linear interpolation hull.
+This is scientifically useful, but it is not identical to solving Tsai's full
+Eq. 3 together with a full transport and `J-V` model.
 
-The main exported Tsai comparison products are:
+### 10.2 Physical picture in plain language
 
-- `outputs/tsai_forward_stateT_to_pth.csv`,
-- `outputs/tsai_inverse_pth_state_to_temperature.csv`,
-- `outputs/tsai_du_dt_samples_at_experimental_state.csv`,
-- `outputs/tsai_temperature_comparison.csv`,
-- `outputs/tsai_temperature_rise_vs_pth_density.png`.
+The physical idea is simple:
 
-When `TSAI_PRIMARY_INPUT = "delta_mu"`, the comparison tables now include both
-MB and FD reconstructions of:
+- hot carriers have excess kinetic energy above the lattice temperature,
+- in GaAs, electrons lose that excess energy mainly by emitting longitudinal
+  optical (LO) phonons,
+- those LO phonons do not disappear instantly,
+- if the LO phonons live long enough, they build up a nonequilibrium
+  population and can be reabsorbed,
+- that reabsorption slows carrier cooling.
+
+So the cooling rate is controlled by a competition:
+
+- faster electron -> LO phonon emission increases cooling,
+- stronger screening weakens the electron-phonon interaction and decreases
+  cooling,
+- longer LO-phonon lifetime makes hot-phonon reabsorption stronger and also
+  decreases cooling.
+
+This is why Tsai's model is more realistic than a single fixed energy-relaxation
+time. The cooling rate is not a constant. It depends on carrier temperature,
+carrier density, chemical potential, screening, and LO-phonon lifetime.
+
+### 10.3 Which equations from Tsai are used
+
+The implementation follows the paper's hierarchy:
+
+```text
+Eq. 3  ->  Eq. 48  ->  Eq. 41  ->  Eq. 35  ->  Eq. 34
+```
+
+with the steady-state hot-phonon steps of Eqs. 39, 40, 46, and 47 used in
+between.
+
+#### Eq. 34: bare polar-LO interaction
+
+For the channel actually used in this repository, Tsai keeps only the polar LO
+phonon matrix element from Eq. 34:
+
+```text
+|M_q|^2 = [e^2 ħω_LO / (2 ε0 q^2 V)] * (1/ε_inf - 1/ε_static)
+```
+
+This is the Fröhlich interaction for polar optical phonons.
+
+Interpretation:
+
+- the coupling is strongest at small `q` because of the `1/q^2` factor,
+- it is stronger in more polar materials through
+  `(1/ε_inf - 1/ε_static)`,
+- only the LO channel is kept because Tsai argues, and the code follows, that
+  it dominates energy relaxation in GaAs.
+
+In code, this is the `base` term in
+`hot_carrier.tsai_model._screened_matrix_element_sq_times_volume_j2()`.
+
+#### Eq. 35 plus Eq. 37-38: screening
+
+Tsai then screens the matrix element through Eq. 35:
+
+```text
+|M_q^screen|^2 = |M_q|^2 * |ε0 / ε_screen(q, ω)|^2
+```
+
+The repository does **not** use the full dynamic Lindhard dielectric function of
+Eq. 36. It uses Tsai's static Thomas-Fermi limit from Eqs. 37-38:
+
+```text
+ε_screen(q, 0) = ε0 * (1 + q_s^2 / q^2)
+q_s^2 = [e^2 / (ε0 ε_static)] * (∂n/∂μ)
+```
+
+Therefore the code evaluates
+
+```text
+|M_q^screen|^2 = |M_q|^2 / (1 + q_s^2 / q^2)^2
+```
+
+The screening wave number `q_s` is computed in
+`hot_carrier.tsai_model._screening_wave_number_m1()`.
+
+Two distinct approximations appear here:
+
+- `TSAI_SCREENING_MODEL = "mb"`:
+
+```text
+∂n/∂μ = n / (k_B T)
+```
+
+- `TSAI_SCREENING_MODEL = "fd_fdiff"`:
+  `∂n/∂μ` is evaluated numerically by finite differences from the FD carrier
+  density.
+
+This is separate from the choice of how `mu_e` is reconstructed from
+`Delta_mu`. Those are two different model layers.
+
+#### Eq. 41: mode-resolved LO-phonon emission time
+
+With the screened interaction, Tsai derives the explicit emission time for each
+phonon wave number `q`:
+
+```text
+1/τ_c-LO^q =
+    [m_c^2 k_B T_c |M_q^screen|^2 V_c / (π ħ^5 q)]
+    * ln[(1 + exp(η_c - ε_min + ε_LO)) / (1 + exp(η_c - ε_min))]
+```
+
+with
+
+```text
+η_c   = μ_c / (k_B T_c)
+ε_LO  = ħω_LO / (k_B T_c)
+ε_min = ħ^2 k_min^2 / (2 m_c k_B T_c)
+k_min = q/2 + m_c ω_LO / (ħ q)
+```
+
+Interpretation:
+
+- `τ_c-LO^q` is the characteristic time for electrons to emit LO phonons of a
+  given wave number `q`,
+- the logarithm is the Fermi-statistics phase-space factor,
+- `ε_min` enforces the kinematic threshold for a carrier to emit an LO phonon
+  while conserving energy and momentum,
+- stronger screening increases `τ_c-LO^q`, meaning slower cooling.
+
+This is implemented in `hot_carrier.tsai_model._tau_c_lo_q_seconds()`.
+
+One important project-specific detail is that the repository stores `mu_e`
+relative to mid-gap, while Eq. 41 uses the electron chemical potential relative
+to the conduction-band edge. The code therefore converts
+
+```text
+μ_c = μ_e - E_g/2
+```
+
+before evaluating Eq. 41.
+
+#### Eq. 48: total intraband cooling rate with hot-phonon bottleneck
+
+Tsai then combines carrier emission with LO-phonon decay and obtains the
+steady-state intraband cooling rate:
+
+```text
+(du/dt)_intra =
+    - (1 / 2π^2) ∫ dq q^2 ħω_LO [N_q(T_c) - N_q(T_L)] / [τ_c-LO^q + τ_LO]
+```
+
+where
+
+```text
+N_q(T) = 1 / [exp(ħω_LO / k_B T) - 1]
+```
+
+is the Bose-Einstein occupation from Eq. 40.
+
+This expression is the compact result of the hot-phonon part of the paper:
+
+- Eq. 39 introduces carrier-driven LO-phonon emission,
+- Eq. 44 introduces LO-phonon decay,
+- Eq. 46 gives the steady-state nonequilibrium phonon population,
+- Eq. 47 gives the net LO emission rate,
+- Eq. 48 inserts that result into the carrier energy-loss integral.
+
+Interpretation:
+
+- if `T_c > T_L`, then `N_q(T_c) > N_q(T_L)`, so carriers tend to emit net LO
+  phonons and lose energy,
+- if `τ_LO` is long, the denominator becomes larger and cooling slows down,
+- if `τ_c-LO^q` is large because screening is strong, cooling also slows down.
+
+In code, Eq. 48 is implemented in
+`hot_carrier.tsai_model.compute_du_dt_intra_electron_w_cm3()`.
+
+The code also reports an effective energy-relaxation time associated with the
+right-hand side of Eq. 48:
+
+```text
+τ_E = [u(T_c) - u(T_L)] / [-(du/dt)_intra]
+```
+
+In implementation terms, `tau_c_lo_energy_s` is obtained as the ratio of the
+Eq. 48 numerator-like integral to `-(du/dt)_intra` over the same numerical `q`
+grid, so it should be read as the code's effective Tsai-style relaxation time.
+
+### 10.4 How the paper equations are translated into code
+
+The implementation is deliberately narrower than the full paper:
+
+- only **electrons** are cooled explicitly,
+- only **polar LO phonons** are retained,
+- screening is **static Thomas-Fermi**, not full dynamic Lindhard,
+- the `q` integral from `0` to `∞` is approximated on a finite geometric grid
+  from `TSAI_Q_MIN_CM1` to `TSAI_Q_MAX_CM1`,
+- the LO-phonon lifetime is supplied as an effective input
+  `TSAI_LO_PHONON_LIFETIME_PS` rather than computed microscopically from
+  Eq. 45,
+- the code evaluates the steady-state closed form of Eq. 48 directly instead of
+  evolving the phonon population dynamically in time.
+
+The main implementation path is:
+
+- `_screened_matrix_element_sq_times_volume_j2()`: Eq. 34 plus static-screening
+  reduction,
+- `_screening_wave_number_m1()`: Eq. 38 under MB or FD finite-difference
+  closure,
+- `_tau_c_lo_q_seconds()`: Eq. 41,
+- `compute_du_dt_intra_electron_w_cm3()`: Eq. 48,
+- `_compute_forward_grid()`: evaluates the model on a `(state, T)` grid,
+- `_build_inverse_grid()` and `_build_temperature_predictor()`: numerically
+  invert the forward map,
+- `run_tsai_temperature_workflow()`: compare the inverse model to the
+  experiment.
+
+The sign convention is:
+
+```text
+(du/dt)_intra < 0  for cooling
+P_th_model        = max( - (du/dt)_intra , 0 )
+```
+
+so all plotted thermalized powers are non-negative.
+
+### 10.5 Why the default primary axis is `Delta_mu`
+
+By default, `TSAI_PRIMARY_INPUT = "delta_mu"`. This choice is a practical
+anti-circularity measure.
+
+If `mu_e` were used directly as the primary input, one would feed the Tsai model
+a quantity that is already reconstructed from the optical fit and therefore
+already depends on the measured carrier temperature.
+
+Instead, the default workflow uses the experimental `Delta_mu` and reconstructs
+`mu_e(Delta_mu, T)` internally for each trial temperature on the Tsai grid:
+
+```text
+Delta_mu, T  ->  mu_e, n  ->  q_s  ->  τ_c-LO^q  ->  (du/dt)_intra
+```
+
+That reconstruction uses the same equal-injection carrier-state model as the
+rest of the repository:
+
+- MB closure from `analysis.compute_mu_and_density_mb()`, or
+- FD closure from `analysis.compute_mu_and_density_fd()`.
+
+The current default is
+`TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`, but MB comparison columns are also
+exported.
+
+This reduces circularity, but it does **not** remove all model dependence.
+`Delta_mu` itself still comes from the optical fit, and the `Delta_mu -> mu_e`
+mapping still depends on the assumed band structure and carrier statistics.
+
+### 10.6 How the comparison to experiment is actually done
+
+The experimental side of the comparison comes from the earlier optical and
+power-balance stages of the repository. For each spectrum, the code already has:
+
+- `temperature_k_exp` from the PL-tail fit,
+- `delta_mu_ev` from the same optical reconstruction,
+- `p_th_exp_w_cm3 = thermalized_power_w_cm3` from the power-balance model.
+
+The crucial identification is:
+
+```text
+p_th_exp_w_cm3  ~=  p_th_model_w_cm3  =  - (du/dt)_intra
+```
+
+The workflow is then:
+
+1. Build a grid in either `(Delta_mu, T)` or `(mu_e, T)`.
+2. Compute `p_th_model_w_cm3` on that grid from Eq. 48.
+3. For each fixed state value, invert the monotonic relation
+
+```text
+(state, T) -> p_th_model
+```
+
+   into
+
+```text
+(state, p_th_model) -> T
+```
+
+   using interpolation in `log10(p_th)`.
+4. Evaluate that inverse map at the experimental pairs
+
+```text
+(delta_mu_exp, p_th_exp)
+```
+
+   or
+
+```text
+(mu_e_exp, p_th_exp)
+```
+
+   to obtain `temperature_sim_k`.
+5. Compare `temperature_sim_k` with the measured `temperature_k_exp`.
+
+This is why the Tsai workflow is an **inverse consistency test**:
+
+- if the paper-based cooling model predicts roughly the same temperature as the
+  optical fit, then the inferred thermalized power is consistent with that
+  cooling law,
+- if it does not, then some combination of the cooling model, screening choice,
+  phonon lifetime, or optical power-balance assumptions is inconsistent.
+
+### 10.7 What the exported Tsai files mean
+
+The main products are:
+
+- `outputs/tsai_forward_stateT_to_pth.csv`:
+  the forward map `(state, T) -> p_th_model`,
+- `outputs/tsai_inverse_pth_state_to_temperature.csv`:
+  the numerically inverted map `(state, p_th) -> T`,
+- `outputs/tsai_du_dt_samples_at_experimental_state.csv`:
+  Eq. 48 evaluated directly at the experimental state points,
+- `outputs/tsai_temperature_comparison.csv`:
+  simulated temperatures, residuals, and reconstructed state variables,
+- `outputs/tsai_temperature_rise_vs_pth_density.png`:
+  the main visual comparison.
+
+When `TSAI_PRIMARY_INPUT = "delta_mu"`, the comparison table includes both MB
+and FD reconstructions of:
 
 - experimental `mu_e` and carrier density,
 - simulated `mu_e` and carrier density,
 - Tsai-predicted temperatures and residuals.
 
-With the bundled dataset and current tuned defaults:
+With the bundled dataset and current defaults:
 
 - `TSAI_LO_PHONON_LIFETIME_PS = 16.0`,
 - `TSAI_Q_MIN_CM1 = 3e4`,
@@ -561,16 +859,46 @@ With the bundled dataset and current tuned defaults:
 - `TSAI_SCREENING_MODEL = "mb"`,
 - `TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`,
 
-the present Tsai comparison gives approximately:
+the present comparison gives approximately:
 
 - FD default closure: MAE `~= 3.31 K`, bias `~= -1.76 K`,
 - MB comparison closure: MAE `~= 3.15 K`, bias `~= -0.68 K`.
 
-That is a useful internal consistency check for this dataset, but it should not
-be treated as a general validation of the model outside the present sample and
-parameter choices. In particular, changing the carrier-statistics closure does
-not change the separate screening approximation; the current defaults still use
-`TSAI_SCREENING_MODEL = "mb"` unless that is switched explicitly.
+### 10.8 What this means scientifically, and what it does not mean
+
+If the Tsai-predicted and experimentally inferred temperatures agree reasonably
+well, the correct conclusion is:
+
+- the experimentally inferred thermalized-power density is broadly consistent
+  with an electron-LO-phonon cooling model of the Tsai type for the chosen
+  parameters and closures.
+
+The correct conclusion is **not**:
+
+- that the Tsai paper has been reproduced in full,
+- that the LO-phonon lifetime or screening model has been uniquely identified,
+- that the optical `P_th` extraction is model-free,
+- that all carrier heating in the sample is necessarily electron-only LO-phonon
+  cooling.
+
+The most important limitations are:
+
+- Eq. 3 is **not** solved here as a full device balance including a computed
+  `J·V` term,
+- the experimental `P_th` comes from the repository's optical power-balance
+  model, not from a direct calorimetric measurement,
+- holes are not cooled explicitly in the Tsai stage,
+- dynamic screening and coupled plasmon-phonon modes are not included,
+- `tau_LO` is treated as an effective parameter,
+- the inverse comparison inherits uncertainty from absorptivity, PLQY,
+  thickness, the optical fit, and the MB/FD carrier-state closure.
+
+That is why the Tsai workflow should be interpreted as a rigorous but still
+model-dependent consistency check between:
+
+- the optical state extracted from PL, and
+- a literature-based microscopic cooling law for electron -> LO-phonon energy
+  relaxation.
 
 ## 11. Software Architecture
 
