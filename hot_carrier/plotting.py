@@ -38,9 +38,11 @@ PAGE_MEDIUM_FIG_HEIGHT_IN = 5.3
 PAGE_TALL_FIG_HEIGHT_IN = 6.2
 PAGE_GRID_FIG_HEIGHT_IN = 5.8
 PAGE_LARGE_GRID_FIG_HEIGHT_IN = 6.4
+PAGE_XL_GRID_FIG_HEIGHT_IN = 7.2
 
 AXES_LABEL_FONT_SIZE = 9.4
 TITLE_FONT_SIZE = 9.8
+MULTIPANEL_TITLE_FONT_SIZE = 9.0
 TICK_FONT_SIZE = 8.4
 LEGEND_FONT_SIZE = 8.0
 ANNOTATION_FONT_SIZE = 8.0
@@ -621,7 +623,7 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     fig, axes = plt.subplots(
         2,
         2,
-        figsize=_page_single_column_figsize(PAGE_LARGE_GRID_FIG_HEIGHT_IN),
+        figsize=_page_single_column_figsize(PAGE_XL_GRID_FIG_HEIGHT_IN),
     )
     ax00, ax01 = axes[0]
     ax10, ax11 = axes[1]
@@ -687,7 +689,11 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     style_axes(ax00, logx=True, logy=True)
     ax00.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
     ax00.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
-    ax00.set_title(r"Volumetric thermalized power: MB vs FD carrier-state map")
+    ax00.set_title(
+        "Volumetric thermalized power:\nMB vs FD carrier-state map",
+        fontsize=MULTIPANEL_TITLE_FONT_SIZE,
+        pad=4.0,
+    )
     ax00.legend(
         handles=[
             Line2D(
@@ -714,8 +720,13 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         loc="best",
         fontsize=LEGEND_FONT_SIZE,
     )
-    cbar00 = fig.colorbar(cm.ScalarMappable(norm=temp_norm, cmap="viridis"), ax=ax00, pad=0.02, fraction=0.05)
-    _style_colorbar(cbar00, "Temperature (K)")
+    cbar00 = fig.colorbar(
+        cm.ScalarMappable(norm=temp_norm, cmap="viridis"),
+        ax=ax00,
+        pad=0.02,
+        fraction=0.05,
+    )
+    _style_colorbar(cbar00, r"$T$ (K)")
     _add_panel_label(ax00, "(a)")
 
     n_default = n_fd_cm3 if default_model == "fd" else n_mb_cm3
@@ -749,7 +760,11 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     ax01.set_xlabel("Carrier temperature, $T$ (K)")
     ax01.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
     ax01.set_title(
-        rf"Thermalized power versus carrier temperature (color = $n_{{\mathrm{{{default_model.upper()}}}}}$)"
+        rf"Thermalized power versus carrier temperature"
+        "\n"
+        rf"(color = $n_{{\mathrm{{{default_model.upper()}}}}}$)",
+        fontsize=MULTIPANEL_TITLE_FONT_SIZE,
+        pad=4.0,
     )
     cbar01 = fig.colorbar(s01, ax=ax01, pad=0.02, fraction=0.05)
     _style_colorbar(cbar01, r"$n$ (cm$^{-3}$)")
@@ -816,7 +831,11 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     style_axes(ax10, logx=True, logy=True)
     ax10.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
     ax10.set_ylabel(r"$P_{\mathrm{th}}/n$ (eV s$^{-1}$ carrier$^{-1}$)")
-    ax10.set_title(r"Per-carrier cooling rate: MB vs FD")
+    ax10.set_title(
+        "Per-carrier cooling rate:\nMB vs FD",
+        fontsize=MULTIPANEL_TITLE_FONT_SIZE,
+        pad=4.0,
+    )
     ax10.legend(
         handles=[
             Line2D(
@@ -843,8 +862,13 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         loc="best",
         fontsize=LEGEND_FONT_SIZE,
     )
-    cbar10 = fig.colorbar(cm.ScalarMappable(norm=temp_norm, cmap="plasma"), ax=ax10, pad=0.02, fraction=0.05)
-    _style_colorbar(cbar10, "Temperature (K)")
+    cbar10 = fig.colorbar(
+        cm.ScalarMappable(norm=temp_norm, cmap="plasma"),
+        ax=ax10,
+        pad=0.02,
+        fraction=0.05,
+    )
+    _style_colorbar(cbar10, r"$T$ (K)")
     _add_panel_label(ax10, "(c)")
 
     intensity_norm = LogNorm(
@@ -919,7 +943,11 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     style_axes(ax11)
     ax11.set_xlabel("Carrier temperature, $T$ (K)")
     ax11.set_ylabel(r"Thermalized energy per pair (eV)")
-    ax11.set_title(r"Excess energy dissipated per absorbed carrier pair")
+    ax11.set_title(
+        "Excess energy dissipated per\nabsorbed carrier pair",
+        fontsize=MULTIPANEL_TITLE_FONT_SIZE,
+        pad=4.0,
+    )
     ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
     cbar11 = fig.colorbar(s11, ax=ax11, pad=0.02, fraction=0.05)
     _style_colorbar(cbar11, r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
@@ -927,10 +955,17 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
 
     fig.suptitle(
         r"Thermalized-power diagnostics in carrier-state space",
-        y=0.992,
+        y=0.985,
         fontsize=SUPTITLE_FONT_SIZE,
     )
-    fig.subplots_adjust(left=0.10, right=0.97, bottom=0.10, top=0.92, hspace=0.28, wspace=0.26)
+    fig.subplots_adjust(
+        left=0.10,
+        right=0.97,
+        bottom=0.09,
+        top=0.89,
+        hspace=0.34,
+        wspace=0.48,
+    )
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1341,7 +1376,8 @@ def plot_mb_validity_limit(
     style_axes(ax0)
     ax0.set_ylabel(r"$\ln\!\left(\int_{E_g}^{\infty} I_{\mathrm{PC}}(E)\,\mathrm{d}E\right)$")
     ax0.set_title(
-        "Maxwell-Boltzmann validity limit from integrated generalized Planck law"
+        "Maxwell-Boltzmann validity limit from integrated generalized Planck law",
+        pad=6.0,
     )
     top_handles, top_labels = ax0.get_legend_handles_labels()
     top_handles.append(Line2D([0], [0], color="0.25", lw=1.2, ls="--"))
@@ -1358,7 +1394,7 @@ def plot_mb_validity_limit(
     style_axes(ax1, logy=True)
     ax1.set_xlabel(r"Reduced QFLS, $(\Delta\mu - E_g)/(k_B T)$")
     ax1.set_ylabel(r"$\Phi_{\mathrm{BE}}/\Phi_{\mathrm{MB}} - 1$")
-    ax1.set_title(r"Deviation from MB")
+    ax1.set_title(r"Deviation from MB", pad=3.0)
     ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
     ax1.set_xlim(x_left, x_right)
 
@@ -1384,7 +1420,7 @@ def plot_mb_validity_limit(
                 },
             )
 
-    fig.subplots_adjust(left=0.12, right=0.98, bottom=0.11, top=0.92, hspace=0.10)
+    fig.subplots_adjust(left=0.12, right=0.98, bottom=0.11, top=0.92, hspace=0.14)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1585,9 +1621,9 @@ def plot_tsai_temperature_rise_vs_pth_density(
         fig, (ax0, ax1) = plt.subplots(
             2,
             1,
-            figsize=_page_single_column_figsize(PAGE_MEDIUM_FIG_HEIGHT_IN),
+            figsize=_page_single_column_figsize(PAGE_TALL_FIG_HEIGHT_IN),
             sharex=True,
-            gridspec_kw={"height_ratios": [3.0, 1.5], "hspace": 0.08},
+            gridspec_kw={"height_ratios": [3.0, 1.5], "hspace": 0.12},
         )
         for x, y_exp, y_fd, y_mb in zip(pth, dT_exp, dT_fd, dT_mb, strict=True):
             ax0.plot([x, x], [y_exp, y_fd], color="#37474f", lw=0.9, alpha=0.25, zorder=1)
@@ -1636,7 +1672,10 @@ def plot_tsai_temperature_rise_vs_pth_density(
 
         style_axes(ax0, logx=True)
         ax0.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
-        ax0.set_title(r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ with MB/FD Tsai closures")
+        ax0.set_title(
+            r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ with MB/FD Tsai closures",
+            pad=6.0,
+        )
         ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
 
         delta_t_fd = dT_fd - dT_exp
@@ -1672,7 +1711,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
         style_axes(ax1, logx=True)
         ax1.set_xlabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
         ax1.set_ylabel(r"$\Delta T_{\mathrm{sim-exp}}$ (K)")
-        ax1.set_title(r"Residual diagnostic")
+        ax1.set_title(r"Residual diagnostic", pad=3.0)
         ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
 
         sm = cm.ScalarMappable(norm=n_norm, cmap=cmap)
@@ -1700,7 +1739,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
             },
         )
 
-        fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.93, hspace=0.10)
+        fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.93, hspace=0.14)
         save_figure(fig, outpath)
         plt.close(fig)
         return
@@ -1748,9 +1787,9 @@ def plot_tsai_temperature_rise_vs_pth_density(
     fig, (ax0, ax1) = plt.subplots(
         2,
         1,
-        figsize=_page_single_column_figsize(PAGE_MEDIUM_FIG_HEIGHT_IN),
+        figsize=_page_single_column_figsize(PAGE_TALL_FIG_HEIGHT_IN),
         sharex=True,
-        gridspec_kw={"height_ratios": [3.0, 1.5], "hspace": 0.08},
+        gridspec_kw={"height_ratios": [3.0, 1.5], "hspace": 0.12},
     )
     for x, y0, y1 in zip(pth, dT_exp, dT_sim, strict=True):
         ax0.plot([x, x], [y0, y1], color="0.65", lw=0.8, alpha=0.35, zorder=1)
@@ -1784,7 +1823,10 @@ def plot_tsai_temperature_rise_vs_pth_density(
 
     style_axes(ax0, logx=True)
     ax0.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
-    ax0.set_title(r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ colored by carrier density")
+    ax0.set_title(
+        r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ colored by carrier density",
+        pad=6.0,
+    )
     ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
 
     delta_t = dT_sim - dT_exp
@@ -1804,7 +1846,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
     style_axes(ax1, logx=True)
     ax1.set_xlabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
     ax1.set_ylabel(r"$\Delta T_{\mathrm{sim-exp}}$ (K)")
-    ax1.set_title(r"Residual diagnostic")
+    ax1.set_title(r"Residual diagnostic", pad=3.0)
 
     sm = cm.ScalarMappable(norm=n_norm, cmap=cmap)
     cbar = fig.colorbar(sm, ax=[ax0, ax1], pad=0.02, fraction=0.04)
@@ -1828,6 +1870,6 @@ def plot_tsai_temperature_rise_vs_pth_density(
         },
     )
 
-    fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.93, hspace=0.10)
+    fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.93, hspace=0.14)
     save_figure(fig, outpath)
     plt.close(fig)
