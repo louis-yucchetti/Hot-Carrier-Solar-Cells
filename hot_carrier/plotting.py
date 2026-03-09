@@ -12,7 +12,12 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import AutoMinorLocator, LogLocator, NullFormatter
 from matplotlib.tri import Triangulation
 
-from .analysis import linearized_signal, _safe_log_yerr, _sanitize_nonnegative
+from .analysis import (
+    _safe_log_yerr,
+    _safe_ratio,
+    _sanitize_nonnegative,
+    linearized_signal,
+)
 from .config import (
     EG_EV,
     E_CHARGE,
@@ -926,6 +931,259 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         fontsize=SUPTITLE_FONT_SIZE,
     )
     fig.subplots_adjust(left=0.10, right=0.97, bottom=0.10, top=0.92, hspace=0.28, wspace=0.26)
+    save_figure(fig, outpath)
+    plt.close(fig)
+
+
+def plot_recombination_channel_contributions(
+    results_df: pd.DataFrame,
+    outpath: Path,
+) -> None:
+    required_cols = {
+        "intensity_w_cm2",
+        "temperature_k",
+        "plqy_eta",
+        "absorbed_power_w_cm3",
+        "absorbed_photon_flux_cm2_s",
+        "active_layer_thickness_cm",
+        "nonradiative_power_w_cm3",
+        "radiative_power_w_cm3",
+        "recombination_power_w_cm3",
+        "thermalized_power_w_cm3",
+        "radiative_fraction",
+        "nonradiative_fraction",
+    }
+    if results_df is None or results_df.empty:
+        return
+    if not required_cols.issubset(results_df.columns):
+        return
+
+    df = results_df.copy()
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=list(required_cols))
+    df = df[(df["intensity_w_cm2"] > 0) & (df["active_layer_thickness_cm"] > 0)]
+    if df.shape[0] < 2:
+        return
+    df = df.sort_values("intensity_w_cm2").reset_index(drop=True)
+
+    x = df["intensity_w_cm2"].to_numpy(dtype=float)
+    temperature_k = df["temperature_k"].to_numpy(dtype=float)
+    eta = np.clip(df["plqy_eta"].to_numpy(dtype=float), 0.0, 1.0)
+    phi_abs_cm2_s = df["absorbed_photon_flux_cm2_s"].to_numpy(dtype=float)
+    thickness_cm = df["active_layer_thickness_cm"].to_numpy(dtype=float)
+
+    p_abs_w_cm3 = df["absorbed_power_w_cm3"].to_numpy(dtype=float)
+    p_nonrad_w_cm3 = df["nonradiative_power_w_cm3"].to_numpy(dtype=float)
+    p_rad_w_cm3 = df["radiative_power_w_cm3"].to_numpy(dtype=float)
+    p_rec_w_cm3 = df["recombination_power_w_cm3"].to_numpy(dtype=float)
+    p_th_w_cm3 = df["thermalized_power_w_cm3"].to_numpy(dtype=float)
+
+    delta_p_th_w_cm3 = np.where(
+        thickness_cm > 0,
+        (2.0 * eta * phi_abs_cm2_s * K_B * temperature_k) / thickness_cm,
+        np.nan,
+    )
+    p_rec_eta0_w_cm3 = p_rec_w_cm3 + delta_p_th_w_cm3
+    p_th_eta0_w_cm3 = p_th_w_cm3 - delta_p_th_w_cm3
+
+    eta_pct = 100.0 * eta
+    rad_fraction_pct = 100.0 * df["radiative_fraction"].to_numpy(dtype=float)
+    nonrad_fraction_pct = 100.0 * df["nonradiative_fraction"].to_numpy(dtype=float)
+    rec_rad_share_pct = 100.0 * _safe_ratio(p_rad_w_cm3, p_rec_w_cm3)
+    p_th_boost_pct = 100.0 * _safe_ratio(delta_p_th_w_cm3, p_th_eta0_w_cm3)
+    p_rec_reduction_pct = 100.0 * _safe_ratio(delta_p_th_w_cm3, p_rec_eta0_w_cm3)
+    p_abs_correction_pct = 100.0 * _safe_ratio(delta_p_th_w_cm3, p_abs_w_cm3)
+
+    x_pad_factor = 10 ** 0.02
+    x_min_plot = float(np.min(x) / x_pad_factor)
+    x_max_plot = float(np.max(x) * x_pad_factor)
+
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=_page_single_column_figsize(PAGE_LARGE_GRID_FIG_HEIGHT_IN),
+        sharex=True,
+    )
+    ax00, ax01, ax10, ax11 = axes.ravel()
+
+    ax00.plot(
+        x,
+        p_nonrad_w_cm3,
+        "o-",
+        color="#455a64",
+        lw=1.45,
+        ms=4.0,
+        label=r"$P_{\mathrm{nonrad}}$",
+    )
+    ax00.plot(
+        x,
+        p_rad_w_cm3,
+        "s-",
+        color="#f4511e",
+        lw=1.35,
+        ms=3.8,
+        label=r"$P_{\mathrm{rad}}$",
+    )
+    ax00.plot(
+        x,
+        p_rec_w_cm3,
+        "-",
+        color="#1e88e5",
+        lw=1.35,
+        label=r"$P_{\mathrm{rec}} = P_{\mathrm{nonrad}} + P_{\mathrm{rad}}$",
+    )
+    ax00.plot(
+        x,
+        p_rec_eta0_w_cm3,
+        "--",
+        color="0.20",
+        lw=1.15,
+        label=r"$P_{\mathrm{rec}}$ if $\eta = 0$",
+    )
+    ax00.fill_between(
+        x,
+        p_rec_w_cm3,
+        p_rec_eta0_w_cm3,
+        color="#90caf9",
+        alpha=0.18,
+    )
+    style_axes(ax00, logx=True, logy=True)
+    ax00.set_ylabel(r"Power density (W cm$^{-3}$)")
+    ax00.set_title(r"Absolute recombination-channel power density")
+    ax00.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    _add_panel_label(ax00, "(a)")
+
+    ax01.plot(
+        x,
+        nonrad_fraction_pct,
+        "o-",
+        color="#546e7a",
+        lw=1.35,
+        ms=4.0,
+        label=r"$P_{\mathrm{nonrad}} / P_{\mathrm{abs}}$",
+    )
+    ax01.plot(
+        x,
+        rad_fraction_pct,
+        "s-",
+        color="#ff7043",
+        lw=1.35,
+        ms=3.8,
+        label=r"$P_{\mathrm{rad}} / P_{\mathrm{abs}}$",
+    )
+    ax01.plot(
+        x,
+        eta_pct,
+        "--",
+        color="#6a1b9a",
+        lw=1.2,
+        label=r"$\eta = \phi_{\mathrm{rad}} / \phi_{\mathrm{abs}}$",
+    )
+    positive_fraction_pct = np.concatenate(
+        [
+            eta_pct[eta_pct > 0],
+            rad_fraction_pct[rad_fraction_pct > 0],
+            nonrad_fraction_pct[nonrad_fraction_pct > 0],
+        ]
+    )
+    if positive_fraction_pct.size > 0:
+        y_min = max(float(np.min(positive_fraction_pct)) / 1.6, 1e-4)
+        y_max = min(float(np.max(positive_fraction_pct)) * 1.35, 300.0)
+        style_axes(ax01, logx=True, logy=True)
+        ax01.set_ylim(y_min, y_max)
+    else:
+        style_axes(ax01, logx=True)
+        ax01.set_ylim(0.0, 1.0)
+    ax01.set_ylabel("Fraction of absorbed power (%)")
+    ax01.set_title(r"PLQY-driven partition of absorbed power")
+    ax01.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    _add_panel_label(ax01, "(b)")
+
+    ax10.plot(
+        x,
+        p_th_w_cm3,
+        "o-",
+        color="#2e7d32",
+        lw=1.45,
+        ms=4.0,
+        label=r"$P_{\mathrm{th}}$ with measured $\eta$",
+    )
+    ax10.plot(
+        x,
+        p_th_eta0_w_cm3,
+        "--",
+        color="#8bc34a",
+        lw=1.15,
+        label=r"$P_{\mathrm{th}}$ if $\eta = 0$",
+    )
+    ax10.fill_between(
+        x,
+        p_th_eta0_w_cm3,
+        p_th_w_cm3,
+        color="#66bb6a",
+        alpha=0.18,
+    )
+    style_axes(ax10, logx=True, logy=True)
+    ax10.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+    ax10.set_ylabel(r"Power density (W cm$^{-3}$)")
+    ax10.set_title(r"Thermalized power gained by allowing $P_{\mathrm{rad}}$")
+    ax10.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    _add_panel_label(ax10, "(c)")
+
+    ax11.plot(
+        x,
+        p_th_boost_pct,
+        "o-",
+        color="#2e7d32",
+        lw=1.4,
+        ms=4.0,
+        label=r"$\Delta P_{\mathrm{th}} / P_{\mathrm{th}}(\eta = 0)$",
+    )
+    ax11.plot(
+        x,
+        p_rec_reduction_pct,
+        "s--",
+        color="#1e88e5",
+        lw=1.2,
+        ms=3.8,
+        label=r"$[P_{\mathrm{rec}}(\eta = 0) - P_{\mathrm{rec}}] / P_{\mathrm{rec}}(\eta = 0)$",
+    )
+    ax11.plot(
+        x,
+        p_abs_correction_pct,
+        ":",
+        color="#f4511e",
+        lw=1.2,
+        label=r"$\Delta P_{\mathrm{th}} / P_{\mathrm{abs}}$",
+    )
+    style_axes(ax11, logx=True)
+    finite_pct = np.concatenate(
+        [
+            p_th_boost_pct[np.isfinite(p_th_boost_pct)],
+            p_rec_reduction_pct[np.isfinite(p_rec_reduction_pct)],
+            p_abs_correction_pct[np.isfinite(p_abs_correction_pct)],
+        ]
+    )
+    finite_pct = finite_pct[finite_pct >= 0]
+    ax11.set_ylim(
+        0.0,
+        float(np.max(finite_pct) * 1.18) if finite_pct.size > 0 else 1.0,
+    )
+    ax11.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+    ax11.set_ylabel("Relative change (%)")
+    ax11.set_title(r"How strongly nonzero $\eta$ changes the power balance")
+    ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    _add_panel_label(ax11, "(d)")
+
+    if x_max_plot > x_min_plot:
+        for ax in (ax00, ax01, ax10, ax11):
+            ax.set_xlim(x_min_plot, x_max_plot)
+
+    fig.suptitle(
+        r"Radiative versus nonradiative recombination contributions",
+        y=0.992,
+        fontsize=SUPTITLE_FONT_SIZE,
+    )
+    fig.subplots_adjust(left=0.10, right=0.98, bottom=0.10, top=0.93, hspace=0.26, wspace=0.24)
     save_figure(fig, outpath)
     plt.close(fig)
 

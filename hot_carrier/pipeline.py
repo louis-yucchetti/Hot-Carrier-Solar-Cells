@@ -46,6 +46,7 @@ from .config import (
 )
 from .models import FitResult
 from .plotting import (
+    plot_recombination_channel_contributions,
     plot_raw_spectra,
     plot_single_fit,
     plot_summary,
@@ -328,6 +329,7 @@ def _print_run_summary(
     print(f"Results table:    {out_dir / 'fit_results.csv'}")
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
     print(f"Power figure:     {out_dir / 'thermalized_power_diagnostics.png'}")
+    print(f"PLQY figure:      {out_dir / 'recombination_channel_contributions.png'}")
     if mb_validity_curves_df is not None and mb_validity_limits_df is not None:
         print(f"MB limit figure:  {out_dir / 'mb_validity_limit.png'}")
         print(f"MB curves CSV:    {out_dir / 'mb_validity_scan.csv'}")
@@ -467,6 +469,10 @@ def main() -> None:
     if legacy_power_plot.exists():
         legacy_power_plot.unlink()
     plot_thermalized_power_diagnostics(results_df, out_dir / "thermalized_power_diagnostics.png")
+    plot_recombination_channel_contributions(
+        results_df,
+        out_dir / "recombination_channel_contributions.png",
+    )
     mb_validity_curves_df: pd.DataFrame | None = None
     mb_validity_limits_df: pd.DataFrame | None = None
     mb_limit_plot_path = out_dir / "mb_validity_limit.png"

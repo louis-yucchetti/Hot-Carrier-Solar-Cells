@@ -652,6 +652,9 @@ in `outputs/`.
   `n` versus excitation intensity.
 - `outputs/thermalized_power_diagnostics.png`: power diagnostics in state space
   and per-carrier form, including MB-vs-FD carrier-density comparisons.
+- `outputs/recombination_channel_contributions.png`: direct comparison of
+  `P_rad` and `P_nonrad`, plus the `eta`-driven change in `P_rec` and `P_th`
+  relative to the `eta = 0` limit.
 - `outputs/mb_validity_limit.png`: exact BE versus MB integrated-GPL
   comparison.
 - `outputs/mb_validity_scan.csv`: full MB-validity scan versus reduced
