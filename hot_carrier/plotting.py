@@ -418,22 +418,28 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         color="#2e7d32",
         label=r"$\mu_h$ (MB)",
     )
-    ax10.plot(
+    ax10.errorbar(
         x,
         results_df["mu_e_fd_ev"],
-        "s--",
+        yerr=results_df["mu_e_fd_err_total_ev"],
+        fmt="s--",
         lw=1.2,
         ms=3.9,
+        capsize=2.0,
+        elinewidth=0.9,
         color="#bf360c",
         alpha=0.9,
         label=r"$\mu_e$ (FD)",
     )
-    ax10.plot(
+    ax10.errorbar(
         x,
         results_df["mu_h_fd_ev"],
-        "s--",
+        yerr=results_df["mu_h_fd_err_total_ev"],
+        fmt="s--",
         lw=1.2,
         ms=3.9,
+        capsize=2.0,
+        elinewidth=0.9,
         color="#1b5e20",
         alpha=0.9,
         label=r"$\mu_h$ (FD)",
@@ -459,12 +465,16 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         label=r"$n$ (MB)",
     )
     n_fd_vals = results_df["carrier_density_fd_cm3"].to_numpy(dtype=float)
-    ax11.plot(
+    n_fd_err = results_df["carrier_density_fd_err_total_cm3"].to_numpy(dtype=float)
+    ax11.errorbar(
         x,
         n_fd_vals,
-        "s--",
+        yerr=_safe_log_yerr(y=n_fd_vals, err=n_fd_err),
+        fmt="s--",
         lw=1.2,
         ms=4.0,
+        capsize=2.0,
+        elinewidth=0.9,
         color="#004d40",
         alpha=0.9,
         label=r"$n$ (FD)",

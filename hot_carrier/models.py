@@ -53,6 +53,18 @@ class FitResult:
     carrier_density_err_range_cm3: float
     carrier_density_err_a0_cm3: float
     carrier_density_err_total_cm3: float
+    mu_e_fd_err_chi2_ev: float
+    mu_e_fd_err_range_ev: float
+    mu_e_fd_err_a0_ev: float
+    mu_e_fd_err_total_ev: float
+    mu_h_fd_err_chi2_ev: float
+    mu_h_fd_err_range_ev: float
+    mu_h_fd_err_a0_ev: float
+    mu_h_fd_err_total_ev: float
+    carrier_density_fd_err_chi2_cm3: float
+    carrier_density_fd_err_range_cm3: float
+    carrier_density_fd_err_a0_cm3: float
+    carrier_density_fd_err_total_cm3: float
     fit_range_samples: int
 
 
@@ -80,6 +92,9 @@ FIT_PARAMETER_KEYS = (
     "mu_e_ev",
     "mu_h_ev",
     "carrier_density_cm3",
+    "mu_e_fd_ev",
+    "mu_h_fd_ev",
+    "carrier_density_fd_cm3",
 )
 
 FIT_RESULT_ERROR_FIELDS = {
@@ -118,6 +133,24 @@ FIT_RESULT_ERROR_FIELDS = {
         "carrier_density_err_range_cm3",
         "carrier_density_err_a0_cm3",
         "carrier_density_err_total_cm3",
+    ),
+    "mu_e_fd_ev": (
+        "mu_e_fd_err_chi2_ev",
+        "mu_e_fd_err_range_ev",
+        "mu_e_fd_err_a0_ev",
+        "mu_e_fd_err_total_ev",
+    ),
+    "mu_h_fd_ev": (
+        "mu_h_fd_err_chi2_ev",
+        "mu_h_fd_err_range_ev",
+        "mu_h_fd_err_a0_ev",
+        "mu_h_fd_err_total_ev",
+    ),
+    "carrier_density_fd_cm3": (
+        "carrier_density_fd_err_chi2_cm3",
+        "carrier_density_fd_err_range_cm3",
+        "carrier_density_fd_err_a0_cm3",
+        "carrier_density_fd_err_total_cm3",
     ),
 }
 

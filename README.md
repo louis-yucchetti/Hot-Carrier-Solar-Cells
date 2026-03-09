@@ -295,7 +295,9 @@ example:
 - `temperature_err_a0_k`,
 - `temperature_err_total_k`.
 
-The same naming pattern is used for `qfls`, `mu_e`, `mu_h`, and carrier density.
+The same naming pattern is used for `qfls`, the MB quantities `mu_e`, `mu_h`,
+and carrier density, and the FD quantities `mu_e_fd`, `mu_h_fd`, and
+`carrier_density_fd`.
 
 ## 7. Carrier-State Reconstruction
 
@@ -337,15 +339,24 @@ The optical fit itself does not change when FD is used. The fitted `T` and
 `Delta_mu` come from the PL tail either way. FD only changes the back-calculated
 carrier-state quantities `mu_e`, `mu_h`, and `n`.
 
+The repository now also propagates the same three optical uncertainty
+contributions into the FD state variables:
+
+- line-fit covariance (`chi2`),
+- fit-window sensitivity (`range`),
+- absorptivity uncertainty (`A0`).
+
 ### 7.4 Why both MB and FD are reported
 
 MB is convenient, fast, and analytically transparent. FD is more reliable once
 the state approaches degeneracy. In this repository:
 
-- MB values are the default quantities used for downstream uncertainty
-  propagation and for the current `Delta_mu`-based Tsai inversion,
-- FD values are exported to show how much the reconstructed carrier state shifts
-  when degeneracy matters.
+- both MB and FD carrier reconstructions are exported with propagated
+  uncertainties derived from the same fitted `T` and `Delta_mu`,
+- MB values remain the default quantities used in the current power-balance
+  per-carrier terms and in the `Delta_mu`-based Tsai inversion,
+- FD values show how much the reconstructed carrier state shifts when
+  degeneracy matters.
 
 That comparison becomes important at the high-intensity end of the dataset.
 
@@ -663,6 +674,8 @@ The results table is wide, but a small set of columns does most of the work:
   `mu_e_fd_ev`, `mu_h_fd_ev`, `carrier_density_fd_cm3`,
 - uncertainty columns:
   all `*_err_chi2_*`, `*_err_range_*`, `*_err_a0_*`, `*_err_total_*`,
+  including `mu_e_fd_err_total_ev`, `mu_h_fd_err_total_ev`,
+  and `carrier_density_fd_err_total_cm3`,
 - power-balance outputs:
   `absorbed_power_*`, `recombination_power_*`, `thermalized_power_*`,
   `thermalized_fraction`, `recombination_fraction`,
@@ -705,8 +718,6 @@ also the ones where the thermodynamic closure should eventually be upgraded.
   real spectral structure of GaAs absorptivity.
 - `Delta_mu` depends on the PL intercept and is therefore sensitive to absolute
   intensity calibration and to the assumed `A0`.
-- FD carrier quantities are reported, but FD-specific propagated uncertainties
-  are not yet included.
 - The Tsai workflow is electron-only and does not represent a full coupled
   electron-hole transport or recombination model.
 - When `TSAI_PRIMARY_INPUT = "delta_mu"`, the Tsai inversion reconstructs
@@ -732,11 +743,11 @@ useful next steps are:
    `mb_validity_limits.csv`, and the main Tsai metrics stay numerically stable
    when the code changes.
 
-3. Propagate uncertainties through the FD and Tsai stages.
+3. Propagate uncertainties through the Tsai stage.
 
-   Right now the uncertainty story is strongest for the optical fit and compact
-   power balance. The next missing piece is uncertainty on FD state variables and
-   simulated Tsai temperatures.
+   Right now the uncertainty story covers the optical fit, MB and FD state
+   reconstruction, and the compact power balance. The next missing piece is
+   uncertainty on the simulated Tsai temperatures.
 
 4. Replace constant `A0` with a spectral `A(E)` treatment.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -246,8 +247,11 @@ def _compute_parameters_from_line(
         float(n_cm3),
     )
 
-
-def _jacobian_mu_density_wrt_t_q(temperature_k: float, qfls_ev: float) -> np.ndarray:
+def _jacobian_state_wrt_t_q(
+    temperature_k: float,
+    qfls_ev: float,
+    state_solver: Callable[[float, float], tuple[float, float, float]],
+) -> np.ndarray:
     jac = np.full((3, 2), np.nan, dtype=float)
     if (not np.isfinite(temperature_k)) or (not np.isfinite(qfls_ev)) or temperature_k <= 0:
         return jac
@@ -262,10 +266,10 @@ def _jacobian_mu_density_wrt_t_q(temperature_k: float, qfls_ev: float) -> np.nda
     q_plus = qfls_ev + dq
     dq_eff = q_plus - q_minus
 
-    mu_e_tp, mu_h_tp, n_tp = compute_mu_and_density_mb(temperature_k=t_plus, qfls_ev=qfls_ev)
-    mu_e_tm, mu_h_tm, n_tm = compute_mu_and_density_mb(temperature_k=t_minus, qfls_ev=qfls_ev)
-    mu_e_qp, mu_h_qp, n_qp = compute_mu_and_density_mb(temperature_k=temperature_k, qfls_ev=q_plus)
-    mu_e_qm, mu_h_qm, n_qm = compute_mu_and_density_mb(temperature_k=temperature_k, qfls_ev=q_minus)
+    mu_e_tp, mu_h_tp, n_tp = state_solver(temperature_k=t_plus, qfls_ev=qfls_ev)
+    mu_e_tm, mu_h_tm, n_tm = state_solver(temperature_k=t_minus, qfls_ev=qfls_ev)
+    mu_e_qp, mu_h_qp, n_qp = state_solver(temperature_k=temperature_k, qfls_ev=q_plus)
+    mu_e_qm, mu_h_qm, n_qm = state_solver(temperature_k=temperature_k, qfls_ev=q_minus)
 
     jac[:, 0] = np.array(
         [
@@ -286,6 +290,28 @@ def _jacobian_mu_density_wrt_t_q(temperature_k: float, qfls_ev: float) -> np.nda
     return jac
 
 
+def _propagate_state_uncertainties(
+    out: dict[str, float],
+    *,
+    temperature_k: float,
+    qfls_ev: float,
+    cov_tq: np.ndarray,
+    state_solver: Callable[[float, float], tuple[float, float, float]],
+    state_keys: tuple[str, str, str],
+) -> None:
+    jac = _jacobian_state_wrt_t_q(
+        temperature_k=temperature_k,
+        qfls_ev=qfls_ev,
+        state_solver=state_solver,
+    )
+    if not (np.all(np.isfinite(jac)) and np.all(np.isfinite(cov_tq))):
+        return
+
+    cov_derived = jac @ cov_tq @ jac.T
+    for idx, key in enumerate(state_keys):
+        out[key] = float(np.sqrt(max(cov_derived[idx, idx], 0.0)))
+
+
 def _chi2_parameter_uncertainties(
     slope: float,
     intercept: float,
@@ -294,14 +320,7 @@ def _chi2_parameter_uncertainties(
     qfls_ev: float,
     assumed_a0: float,
 ) -> dict[str, float]:
-    out = {
-        "temperature_k": np.nan,
-        "qfls_effective_ev": np.nan,
-        "qfls_ev": np.nan,
-        "mu_e_ev": np.nan,
-        "mu_h_ev": np.nan,
-        "carrier_density_cm3": np.nan,
-    }
+    out = {key: np.nan for key in FIT_PARAMETER_KEYS}
     if (not np.isfinite(slope)) or slope == 0:
         return out
     if covariance_line.shape != (2, 2) or not np.all(np.isfinite(covariance_line)):
@@ -332,12 +351,22 @@ def _chi2_parameter_uncertainties(
     out["qfls_ev"] = float(np.sqrt(max(var_q, 0.0)))
 
     cov_tq = cov_primary[np.ix_([0, 2], [0, 2])]
-    jac_derived = _jacobian_mu_density_wrt_t_q(temperature_k=temperature_k, qfls_ev=qfls_ev)
-    if np.all(np.isfinite(jac_derived)) and np.all(np.isfinite(cov_tq)):
-        cov_derived = jac_derived @ cov_tq @ jac_derived.T
-        out["mu_e_ev"] = float(np.sqrt(max(cov_derived[0, 0], 0.0)))
-        out["mu_h_ev"] = float(np.sqrt(max(cov_derived[1, 1], 0.0)))
-        out["carrier_density_cm3"] = float(np.sqrt(max(cov_derived[2, 2], 0.0)))
+    _propagate_state_uncertainties(
+        out,
+        temperature_k=temperature_k,
+        qfls_ev=qfls_ev,
+        cov_tq=cov_tq,
+        state_solver=compute_mu_and_density_mb,
+        state_keys=("mu_e_ev", "mu_h_ev", "carrier_density_cm3"),
+    )
+    _propagate_state_uncertainties(
+        out,
+        temperature_k=temperature_k,
+        qfls_ev=qfls_ev,
+        cov_tq=cov_tq,
+        state_solver=compute_mu_and_density_fd,
+        state_keys=("mu_e_fd_ev", "mu_h_fd_ev", "carrier_density_fd_cm3"),
+    )
 
     return out
 
@@ -552,12 +581,36 @@ def _fit_range_rms_uncertainty(
         weights = np.ones_like(weights, dtype=float)
     weights = weights / np.sum(weights)
 
+    sample_parameter_values: dict[str, np.ndarray] = {}
+    if any(
+        key in base_parameters
+        for key in ("mu_e_fd_ev", "mu_h_fd_ev", "carrier_density_fd_cm3")
+    ):
+        fd_values = np.array(
+            [
+                compute_mu_and_density_fd(
+                    temperature_k=sample.temperature_k,
+                    qfls_ev=sample.qfls_ev,
+                )
+                for sample in samples
+            ],
+            dtype=float,
+        )
+        sample_parameter_values["mu_e_fd_ev"] = fd_values[:, 0]
+        sample_parameter_values["mu_h_fd_ev"] = fd_values[:, 1]
+        sample_parameter_values["carrier_density_fd_cm3"] = fd_values[:, 2]
+
     for key, base_value in base_parameters.items():
         if not np.isfinite(base_value):
             out[key] = np.nan
             continue
 
-        sample_values = np.array([getattr(sample, key) for sample in samples], dtype=float)
+        if key not in sample_parameter_values:
+            sample_parameter_values[key] = np.array(
+                [getattr(sample, key) for sample in samples],
+                dtype=float,
+            )
+        sample_values = sample_parameter_values[key]
         finite = np.isfinite(sample_values)
         if not np.any(finite):
             out[key] = np.nan
@@ -607,14 +660,7 @@ def _a0_parameter_uncertainties(
     assumed_a0: float,
     a0_sigma: float,
 ) -> dict[str, float]:
-    out = {
-        "temperature_k": 0.0,
-        "qfls_effective_ev": 0.0,
-        "qfls_ev": 0.0,
-        "mu_e_ev": 0.0,
-        "mu_h_ev": 0.0,
-        "carrier_density_cm3": 0.0,
-    }
+    out = {key: 0.0 for key in FIT_PARAMETER_KEYS}
     if (
         (not np.isfinite(temperature_k))
         or (temperature_k <= 0)
@@ -626,6 +672,9 @@ def _a0_parameter_uncertainties(
         out["mu_e_ev"] = np.nan
         out["mu_h_ev"] = np.nan
         out["carrier_density_cm3"] = np.nan
+        out["mu_e_fd_ev"] = np.nan
+        out["mu_h_fd_ev"] = np.nan
+        out["carrier_density_fd_cm3"] = np.nan
         return out
 
     if (not np.isfinite(a0_sigma)) or (a0_sigma <= 0):
@@ -636,14 +685,22 @@ def _a0_parameter_uncertainties(
     out["qfls_ev"] = float(sigma_q)
 
     cov_tq = np.array([[0.0, 0.0], [0.0, sigma_q**2]], dtype=float)
-    jac_derived = _jacobian_mu_density_wrt_t_q(
-        temperature_k=temperature_k, qfls_ev=qfls_ev
+    _propagate_state_uncertainties(
+        out,
+        temperature_k=temperature_k,
+        qfls_ev=qfls_ev,
+        cov_tq=cov_tq,
+        state_solver=compute_mu_and_density_mb,
+        state_keys=("mu_e_ev", "mu_h_ev", "carrier_density_cm3"),
     )
-    if np.all(np.isfinite(jac_derived)):
-        cov_derived = jac_derived @ cov_tq @ jac_derived.T
-        out["mu_e_ev"] = float(np.sqrt(max(cov_derived[0, 0], 0.0)))
-        out["mu_h_ev"] = float(np.sqrt(max(cov_derived[1, 1], 0.0)))
-        out["carrier_density_cm3"] = float(np.sqrt(max(cov_derived[2, 2], 0.0)))
+    _propagate_state_uncertainties(
+        out,
+        temperature_k=temperature_k,
+        qfls_ev=qfls_ev,
+        cov_tq=cov_tq,
+        state_solver=compute_mu_and_density_fd,
+        state_keys=("mu_e_fd_ev", "mu_h_fd_ev", "carrier_density_fd_cm3"),
+    )
 
     return out
 
@@ -1301,6 +1358,9 @@ def fit_single_spectrum(
         "mu_e_ev": mu_e_ev,
         "mu_h_ev": mu_h_ev,
         "carrier_density_cm3": n_cm3,
+        "mu_e_fd_ev": mu_e_fd_ev,
+        "mu_h_fd_ev": mu_h_fd_ev,
+        "carrier_density_fd_cm3": n_fd_cm3,
     }
     chi2_err = _chi2_parameter_uncertainties(
         slope=slope,
