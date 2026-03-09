@@ -145,19 +145,6 @@ The mapping logic in `hot_carrier.pipeline._resolve_plqy_profiles()` is:
 For the bundled PLQY file and current settings, the code falls back to the
 row-aligned option.
 
-### 4.4 Optional external Tsai table
-
-`TSAI_MODEL_TABLE_CSV` is a separate, optional overlay for comparing the
-experimental `(n, T, P_th)` manifold to an externally prepared theory table.
-If used, the CSV must contain:
-
-- `n_cm3`,
-- `temperature_k`,
-- `p_th_w_cm3`.
-
-This external overlay is separate from the internal Tsai Eq. 41 plus Eq. 48
-workflow implemented in `hot_carrier/tsai_model.py`.
-
 ## 5. Optical Model: From PL Tail to `T` and `Delta_mu`
 
 ### 5.1 Generalized Planck law
@@ -653,14 +640,7 @@ in `outputs/`.
 - `outputs/tsai_temperature_rise_vs_pth_density.png`: main figure of merit,
   `T - T_L` versus `P_th`, colored by density.
 
-### 14.3 Optional external-theory overlay
-
-If `TSAI_MODEL_TABLE_CSV` is provided, the pipeline also writes:
-
-- `outputs/pth_nT_comparison.png`,
-- `outputs/pth_experiment_vs_tsai.csv`.
-
-### 14.4 The most important columns in `fit_results.csv`
+### 14.3 The most important columns in `fit_results.csv`
 
 The results table is wide, but a small set of columns does most of the work:
 

@@ -66,10 +66,6 @@ PLQY_ETA_SIGMA = 0.0
 PLQY_RESULTS_CSV = "GaAs bulk_PLQY_results.csv"
 ACTIVE_LAYER_THICKNESS_NM = 950.0
 
-# Optional Tsai-model lookup table for direct experiment/theory comparison.
-# CSV columns required: n_cm3, temperature_k, p_th_w_cm3
-TSAI_MODEL_TABLE_CSV = ""
-
 # Tsai 2018 electron intraband cooling model (Eq. 41 + Eq. 48) settings.
 TSAI_ENABLE_SIMULATION = True
 TSAI_LATTICE_TEMPERATURE_K = 298.15

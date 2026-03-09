@@ -38,15 +38,12 @@ from .config import (
     PLQY_ETA_SIGMA,
     PLQY_RESULTS_CSV,
     TSAI_ENABLE_SIMULATION,
-    TSAI_MODEL_TABLE_CSV,
     WINDOW_PEAK_OFFSET_EV,
     WINDOW_SEARCH_MAX_EV,
     WINDOW_SEARCH_MIN_EV,
 )
 from .models import FitResult
 from .plotting import (
-    load_tsai_model_table,
-    plot_pth_nt_comparison,
     plot_raw_spectra,
     plot_single_fit,
     plot_summary,
@@ -308,8 +305,6 @@ def _resolve_plqy_profiles(
 def _print_run_summary(
     out_dir: Path,
     fit_dir: Path,
-    comparison_df: pd.DataFrame | None,
-    tsai_model_df: pd.DataFrame | None,
     tsai_simulation_result: TsaiWorkflowResult | None,
     mb_validity_curves_df: pd.DataFrame | None,
     mb_validity_limits_df: pd.DataFrame | None,
@@ -329,14 +324,8 @@ def _print_run_summary(
         print(f"MB limits CSV:    {out_dir / 'mb_validity_limits.csv'}")
     else:
         print("MB limit figure:  skipped")
-    if tsai_model_df is not None:
-        print(f"Pth(n,T) figure:  {out_dir / 'pth_nT_comparison.png'}")
-    else:
-        print("Pth(n,T) figure:  skipped (no external Tsai model table)")
     if tsai_simulation_result is not None:
         print(f"Tsai FOM plot:    {out_dir / 'tsai_temperature_rise_vs_pth_density.png'}")
-    if comparison_df is not None:
-        print(f"Tsai compare CSV: {out_dir / 'pth_experiment_vs_tsai.csv'}")
     if tsai_simulation_result is not None:
         print(f"Tsai forward CSV: {tsai_simulation_result.forward_csv_path}")
         print(f"Tsai inverse CSV: {tsai_simulation_result.inverse_csv_path}")
@@ -379,13 +368,6 @@ def _print_run_summary(
         rf"sigma=[{np.min(plqy_eta_sigma_used):.4f}, {np.max(plqy_eta_sigma_used):.4f}], "
         rf"d={ACTIVE_LAYER_THICKNESS_NM:.1f} nm"
     )
-    if tsai_model_df is None:
-        print("Tsai model table: not provided (set TSAI_MODEL_TABLE_CSV to enable overlay/parity)")
-    else:
-        print(
-            "Tsai model table: "
-            f"{TSAI_MODEL_TABLE_CSV} | points={tsai_model_df.shape[0]}"
-        )
     if mb_validity_limits_df is not None and (not mb_validity_limits_df.empty):
         finite_limits = mb_validity_limits_df["x_limit"].to_numpy(dtype=float)
         finite_limits = finite_limits[np.isfinite(finite_limits)]
@@ -461,17 +443,12 @@ def main() -> None:
         active_layer_thickness_nm=ACTIVE_LAYER_THICKNESS_NM,
         eg_ev=EG_EV,
     )
-    tsai_model_df = load_tsai_model_table(TSAI_MODEL_TABLE_CSV)
-    pth_nt_outpath = out_dir / "pth_nT_comparison.png"
-    comparison_df: pd.DataFrame | None = None
-    if tsai_model_df is not None:
-        comparison_df = plot_pth_nt_comparison(
-            results_df=results_df,
-            outpath=pth_nt_outpath,
-            theory_df=tsai_model_df,
-        )
-    elif pth_nt_outpath.exists():
-        pth_nt_outpath.unlink()
+    legacy_tsai_overlay_plot = out_dir / "pth_nT_comparison.png"
+    if legacy_tsai_overlay_plot.exists():
+        legacy_tsai_overlay_plot.unlink()
+    legacy_tsai_overlay_csv = out_dir / "pth_experiment_vs_tsai.csv"
+    if legacy_tsai_overlay_csv.exists():
+        legacy_tsai_overlay_csv.unlink()
     results_df.to_csv(out_dir / "fit_results.csv", index=False)
     plot_summary(results_df, out_dir / "parameters_vs_intensity.png")
     legacy_power_plot = out_dir / "thermalized_power_vs_absorbed.png"
@@ -529,13 +506,9 @@ def main() -> None:
                 tsai_result=tsai_simulation_result,
                 outpath=out_dir / "tsai_temperature_rise_vs_pth_density.png",
             )
-    if comparison_df is not None:
-        comparison_df.to_csv(out_dir / "pth_experiment_vs_tsai.csv", index=False)
     _print_run_summary(
         out_dir=out_dir,
         fit_dir=fit_dir,
-        comparison_df=comparison_df,
-        tsai_model_df=tsai_model_df,
         tsai_simulation_result=tsai_simulation_result,
         mb_validity_curves_df=mb_validity_curves_df,
         mb_validity_limits_df=mb_validity_limits_df,
