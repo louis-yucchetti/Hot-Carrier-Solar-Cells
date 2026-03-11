@@ -777,6 +777,41 @@ This is narrower than solving Tsai Eq. 3 together with a complete transport and
 `J-V` model. The comparison is still useful, but the interpretation must stay at
 that level.
 
+Two points must be stated explicitly because they are easy to blur together:
+
+- the Tsai stage is **not** a free-parameter fit,
+- the Tsai stage is **not** driven by raw spectra alone.
+
+Once `hot_carrier/config.py` is fixed, the Tsai workflow does **not** adjust
+`tau_LO`, dielectric constants, effective masses, screening settings, or grid
+bounds to force agreement with experiment. It deterministically evaluates the
+chosen model over a state-temperature grid and then compares that model to the
+experimentally inferred state.
+
+The Tsai comparison therefore mixes three kinds of inputs:
+
+1. Quantities inferred from experiment **before** the Tsai stage:
+   - `Delta_mu_exp` and `T_exp`, obtained from the optical GPL-tail fit,
+   - `P_th_exp`, obtained from the absorbed-minus-recombination power balance.
+2. Fixed model parameters chosen by the user or taken from external material
+   inputs:
+   - `TSAI_LO_PHONON_LIFETIME_PS`,
+   - `TSAI_LO_PHONON_ENERGY_EV`,
+   - `TSAI_EPSILON_INF`, `TSAI_EPSILON_STATIC`,
+   - `TSAI_LATTICE_TEMPERATURE_K`,
+   - `EG_EV`, `M_E_EFF`,
+   - `TSAI_SCREENING_MODEL`, `TSAI_USE_STATIC_SCREENING`,
+   - `TSAI_DELTA_MU_CARRIER_STATISTICS`.
+3. Numerical construction choices:
+   - whether the inverse map is built on `Delta_mu` or `mu_e`,
+   - the `q` integration limits and resolution,
+   - the temperature and state-axis grid bounds,
+   - interpolation in `log10(P_th)`.
+
+So the Tsai stage is best described as a **no-fit, physics-based comparison
+conditioned on experimentally inferred inputs and on a chosen parameter set**.
+It is not a parameter-free derivation from raw data plus fundamental constants.
+
 ### 11.2 Equations used
 
 The implemented hierarchy is:
@@ -905,6 +940,11 @@ The regression is performed on the linearized quantity
 `outputs/tsai_temperature_rise_vs_pth_density.png` is the back-transformed
 result drawn on the original `Delta T` versus `P_th` axes, so it does not
 appear as a straight line in the displayed figure.
+
+That regression is a compact diagnostic only. It does **not** feed back into the
+Tsai forward map, does **not** tune `tau_LO` or any other Tsai parameter, and
+does **not** affect the simulated temperatures reported by the inverse-map
+comparison.
 
 With the present defaults and bundled dataset, the fitted `Q` values are:
 
@@ -1054,15 +1094,55 @@ match.
 
 ### 13.5 Tsai workflow
 
-- `TSAI_LO_PHONON_ENERGY_EV = 0.03536`
-- `TSAI_LO_PHONON_LIFETIME_PS = 16.0`
-- `TSAI_PRIMARY_INPUT = "delta_mu"`
-- `TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`
-- `TSAI_SCREENING_MODEL = "mb"`
-- `TSAI_Q_MIN_CM1`, `TSAI_Q_MAX_CM1`, `TSAI_Q_POINTS`
+The Tsai comparison depends on a set of fixed modelling choices. These are
+**chosen inputs**, not parameters extracted by the Tsai workflow:
 
-These settings control the microscopic cooling law and therefore the simulated
-temperature.
+- `TSAI_LATTICE_TEMPERATURE_K = 298.15`: reference lattice temperature.
+- `TSAI_LO_PHONON_ENERGY_EV = 0.03536`: LO-phonon energy entering the
+  occupation factors and Eq. 48.
+- `TSAI_LO_PHONON_LIFETIME_PS = 16.0`: effective hot-phonon lifetime. This is a
+  user-specified parameter in the present workflow, not an output uniquely
+  identified from the bundled dataset.
+- `TSAI_EPSILON_INF = 10.89`, `TSAI_EPSILON_STATIC = 12.90`: dielectric inputs
+  entering the Fröhlich coupling and screening.
+- `EG_EV = 1.424`, `M_E_EFF = 0.067`: GaAs band and electron effective-mass
+  inputs used in the state reconstruction and cooling kernel.
+- `TSAI_PRIMARY_INPUT = "delta_mu"`: the inverse map is parameterized by
+  `Delta_mu` rather than directly by `mu_e`.
+- `TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`: `Delta_mu -> mu_e` reconstruction
+  inside the Tsai grid uses Fermi-Dirac carrier statistics.
+- `TSAI_USE_STATIC_SCREENING = True`,
+  `TSAI_SCREENING_MODEL = "mb"`: static Thomas-Fermi screening with an MB
+  compressibility closure by default.
+- `TSAI_Q_MIN_CM1 = 3e4`, `TSAI_Q_MAX_CM1 = 1e8`, `TSAI_Q_POINTS = 520`: `q`
+  integration domain and resolution for Eq. 48.
+- `TSAI_T_GRID_MIN_K = 280.0`, `TSAI_T_GRID_MAX_K = 950.0`,
+  `TSAI_T_GRID_POINTS = 135`: temperature grid for the forward map.
+- `TSAI_DELTA_MU_GRID_MIN_EV`, `TSAI_DELTA_MU_GRID_MAX_EV`,
+  `TSAI_DELTA_MU_GRID_MARGIN_EV`, `TSAI_DELTA_MU_GRID_POINTS`: state-axis setup
+  when `TSAI_PRIMARY_INPUT = "delta_mu"`.
+- `TSAI_MU_E_GRID_MIN_EV`, `TSAI_MU_E_GRID_MAX_EV`,
+  `TSAI_MU_E_GRID_MARGIN_EV`, `TSAI_MU_E_GRID_POINTS`: alternative state-axis
+  setup when `TSAI_PRIMARY_INPUT = "mu_e"`.
+- `TSAI_PTH_INVERSE_POINTS = 240`: sampling density for the inverse
+  `T(state, P_th)` map in `log10(P_th)`.
+
+The Tsai stage also depends indirectly on earlier modelling choices because the
+experimental `P_th` passed into it is not a raw measured channel. It comes from
+the power-balance model, which uses:
+
+- laser absorptivity at the pump wavelength,
+- PLQY values or the PLQY table mapping,
+- active-layer thickness,
+- average radiative and nonradiative recombination-energy assumptions.
+
+So even before the Tsai kernel is evaluated, the "experimental" comparison
+target is already a model-derived quantity.
+
+Changing any of the fixed Tsai settings above can change the predicted
+temperature even if the underlying spectra are unchanged. Agreement between the
+Tsai map and experiment should therefore always be read as agreement under a
+specific chosen parameterization, not as a parameter-free proof.
 
 ## 14. Limitations That Matter Scientifically
 
@@ -1077,11 +1157,14 @@ important limitations are:
    so it is deliberately generic rather than sample-specific.
 5. The power-balance stage uses average recombination energies, not a spectral
    recombination integral.
-6. The Tsai comparison is electron-only and treats `tau_LO` as an effective
-   input parameter.
+6. The Tsai comparison is electron-only and treats `tau_LO` as a user-specified
+   effective input parameter rather than an output uniquely identified by the
+   dataset.
 7. Screening is static Thomas-Fermi rather than a full dynamic dielectric
    treatment.
-8. The Tsai stage currently has no propagated uncertainty band.
+8. The Tsai stage currently has no propagated uncertainty band, so the reported
+   temperature comparison does not quantify sensitivity to the chosen Tsai
+   parameters.
 
 None of these points invalidates the present analysis. They define its
 interpretation domain.
