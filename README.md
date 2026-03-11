@@ -718,16 +718,16 @@ That deserves explicit justification.
 For a direct optical transition in parabolic bands, the electron and hole are
 created at the same `|k|`, so their excess kinetic energies split as:
 
-$$
-\frac{E_{\mathrm{excess},e}}{E_{\mathrm{excess,total}}}
-= \frac{1/m_e^*}{1/m_e^* + 1/m_h^*}
-= \frac{m_h^*}{m_e^* + m_h^*}
+$$  
+\frac{E_{\mathrm{excess},\mathrm{e}}}{E_{\mathrm{excess},\mathrm{total}}}
+= \frac{1/m_e^{*}}{1/m_e^{*} + 1/m_h^{*}}
+= \frac{m_h^{*}}{m_e^{*} + m_h^{*}}
 $$
 
 Using the masses configured in this repository:
 
-- `m_e* = 0.067`
-- `m_h* = 0.50`
+- `m_e^{*} = 0.067`
+- `m_h^{*} = 0.50`
 
 gives:
 
