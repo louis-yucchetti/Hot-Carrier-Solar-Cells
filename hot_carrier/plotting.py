@@ -25,6 +25,8 @@ from .config import (
     K_B,
     MB_VALIDITY_REL_ERROR_LIMIT,
     SAVE_DPI,
+    TSAI_LATTICE_TEMPERATURE_K,
+    TSAI_LO_PHONON_ENERGY_EV,
 )
 from .models import FitResult
 
@@ -137,6 +139,80 @@ def style_axes(ax: plt.Axes, logx: bool = False, logy: bool = False) -> None:
 def save_figure(fig: plt.Figure, outpath: Path) -> None:
     png_outpath = outpath.with_suffix(".png")
     fig.savefig(png_outpath, dpi=SAVE_DPI, bbox_inches="tight")
+
+
+def _compute_tsai_q_factor_fit(
+    pth_w_cm3: np.ndarray,
+    temperature_rise_k: np.ndarray,
+) -> tuple[float, float, float] | None:
+    pth = np.asarray(pth_w_cm3, dtype=float)
+    delta_t = np.asarray(temperature_rise_k, dtype=float)
+    temperature_k = TSAI_LATTICE_TEMPERATURE_K + delta_t
+
+    valid = (
+        np.isfinite(pth)
+        & (pth > 0)
+        & np.isfinite(delta_t)
+        & (delta_t > 0)
+        & np.isfinite(temperature_k)
+        & (temperature_k > 0)
+    )
+    if np.count_nonzero(valid) < 2:
+        return None
+
+    x = delta_t[valid]
+    if np.allclose(x, x[0]):
+        return None
+
+    lo_phonon_energy_j = TSAI_LO_PHONON_ENERGY_EV * E_CHARGE
+    y = pth[valid] * np.exp(lo_phonon_energy_j / (K_B * temperature_k[valid]))
+    slope, intercept = np.polyfit(x, y, deg=1)
+    y_fit = slope * x + intercept
+    ss_res = float(np.sum((y - y_fit) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+    return float(slope), float(intercept), float(r2)
+
+
+def _build_tsai_q_fit_curve(
+    temperature_rise_k: np.ndarray,
+    slope: float,
+    intercept: float,
+    n_points: int = 240,
+) -> tuple[np.ndarray, np.ndarray]:
+    delta_t = np.asarray(temperature_rise_k, dtype=float)
+    valid = np.isfinite(delta_t) & (delta_t > 0)
+    if np.count_nonzero(valid) < 2:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    delta_t_min = float(np.min(delta_t[valid]))
+    delta_t_max = float(np.max(delta_t[valid]))
+    if delta_t_max <= delta_t_min:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    delta_t_grid = np.linspace(delta_t_min, delta_t_max, int(n_points), dtype=float)
+    temperature_k = TSAI_LATTICE_TEMPERATURE_K + delta_t_grid
+    lo_phonon_energy_j = TSAI_LO_PHONON_ENERGY_EV * E_CHARGE
+    linearized_pth = slope * delta_t_grid + intercept
+    pth_fit = linearized_pth * np.exp(-(lo_phonon_energy_j / (K_B * temperature_k)))
+
+    valid_curve = (
+        np.isfinite(pth_fit)
+        & (pth_fit > 0)
+        & np.isfinite(delta_t_grid)
+        & (delta_t_grid > 0)
+    )
+    return pth_fit[valid_curve], delta_t_grid[valid_curve]
+
+
+def _format_tsai_q_fit_summary(
+    label: str,
+    fit_result: tuple[float, float, float] | None,
+) -> str | None:
+    if fit_result is None:
+        return None
+    q_factor, _intercept, r2 = fit_result
+    return f"{label}: Q={q_factor:.2e} W cm^-3 K^-1, R^2={r2:.3f}"
 
 
 def plot_raw_spectra(
@@ -1613,6 +1689,9 @@ def plot_tsai_temperature_rise_vs_pth_density(
         n_exp = n_exp[valid]
         n_mb = n_mb[valid]
         n_fd = n_fd[valid]
+        q_fit_exp = _compute_tsai_q_factor_fit(pth, dT_exp)
+        q_fit_fd = _compute_tsai_q_factor_fit(pth, dT_fd)
+        q_fit_mb = _compute_tsai_q_factor_fit(pth, dT_mb)
 
         n_all = np.concatenate([n_exp, n_mb, n_fd])
         n_norm = LogNorm(vmin=float(np.min(n_all)), vmax=float(np.max(n_all)))
@@ -1669,6 +1748,30 @@ def plot_tsai_temperature_rise_vs_pth_density(
             label=f"Tsai simulated (MB{' default' if default_model == 'mb' else ''})",
             zorder=3,
         )
+        for fit_result, fit_source, color, linestyle, label in (
+            (q_fit_exp, dT_exp, "#263238", "--", "Experimental Q-fit"),
+            (q_fit_fd, dT_fd, "#1565c0", "-.", "FD Q-fit"),
+            (q_fit_mb, dT_mb, "#8e24aa", ":", "MB Q-fit"),
+        ):
+            if fit_result is None:
+                continue
+            fit_pth, fit_dt = _build_tsai_q_fit_curve(
+                temperature_rise_k=fit_source,
+                slope=fit_result[0],
+                intercept=fit_result[1],
+            )
+            if fit_pth.size < 2:
+                continue
+            ax0.plot(
+                fit_pth,
+                fit_dt,
+                color=color,
+                lw=1.35,
+                ls=linestyle,
+                alpha=0.95,
+                label=label,
+                zorder=2,
+            )
 
         style_axes(ax0, logx=True)
         ax0.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
@@ -1676,7 +1779,34 @@ def plot_tsai_temperature_rise_vs_pth_density(
             r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ with MB/FD Tsai closures",
             pad=6.0,
         )
-        ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+        q_summary_lines = [
+            line
+            for line in (
+                _format_tsai_q_fit_summary("Exp", q_fit_exp),
+                _format_tsai_q_fit_summary("FD", q_fit_fd),
+                _format_tsai_q_fit_summary("MB", q_fit_mb),
+            )
+            if line is not None
+        ]
+        if q_summary_lines:
+            q_text = "Linearized Q fit:\n" + "\n".join(q_summary_lines)
+            q_text_artist = ax0.text(
+                0.03,
+                0.97,
+                q_text,
+                transform=ax0.transAxes,
+                ha="left",
+                va="top",
+                fontsize=ANNOTATION_FONT_SIZE,
+                bbox={
+                    "facecolor": "white",
+                    "edgecolor": "0.35",
+                    "boxstyle": "square,pad=0.2",
+                    "alpha": 0.92,
+                },
+            )
+            _raise_annotation(q_text_artist)
+        ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE, ncol=2)
 
         delta_t_fd = dT_fd - dT_exp
         delta_t_mb = dT_mb - dT_exp
@@ -1779,6 +1909,8 @@ def plot_tsai_temperature_rise_vs_pth_density(
     dT_sim = dT_sim[valid]
     n_exp = n_exp[valid]
     n_sim = n_sim[valid]
+    q_fit_exp = _compute_tsai_q_factor_fit(pth, dT_exp)
+    q_fit_sim = _compute_tsai_q_factor_fit(pth, dT_sim)
 
     n_all = np.concatenate([n_exp, n_sim])
     n_norm = LogNorm(vmin=float(np.min(n_all)), vmax=float(np.max(n_all)))
@@ -1820,6 +1952,29 @@ def plot_tsai_temperature_rise_vs_pth_density(
         label="Tsai-simulated",
         zorder=4,
     )
+    for fit_result, fit_source, color, linestyle, label in (
+        (q_fit_exp, dT_exp, "#263238", "--", "Experimental Q-fit"),
+        (q_fit_sim, dT_sim, "#1565c0", "-.", "Tsai Q-fit"),
+    ):
+        if fit_result is None:
+            continue
+        fit_pth, fit_dt = _build_tsai_q_fit_curve(
+            temperature_rise_k=fit_source,
+            slope=fit_result[0],
+            intercept=fit_result[1],
+        )
+        if fit_pth.size < 2:
+            continue
+        ax0.plot(
+            fit_pth,
+            fit_dt,
+            color=color,
+            lw=1.35,
+            ls=linestyle,
+            alpha=0.95,
+            label=label,
+            zorder=2,
+        )
 
     style_axes(ax0, logx=True)
     ax0.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
@@ -1828,6 +1983,32 @@ def plot_tsai_temperature_rise_vs_pth_density(
         pad=6.0,
     )
     ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    q_summary_lines = [
+        line
+        for line in (
+            _format_tsai_q_fit_summary("Exp", q_fit_exp),
+            _format_tsai_q_fit_summary("Tsai", q_fit_sim),
+        )
+        if line is not None
+    ]
+    if q_summary_lines:
+        q_text = "Linearized Q fit:\n" + "\n".join(q_summary_lines)
+        q_text_artist = ax0.text(
+            0.03,
+            0.97,
+            q_text,
+            transform=ax0.transAxes,
+            ha="left",
+            va="top",
+            fontsize=ANNOTATION_FONT_SIZE,
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "0.35",
+                "boxstyle": "square,pad=0.2",
+                "alpha": 0.92,
+            },
+        )
+        _raise_annotation(q_text_artist)
 
     delta_t = dT_sim - dT_exp
     ax1.axhline(0.0, color="0.25", lw=1.0, ls="--", zorder=1)
