@@ -302,6 +302,19 @@ $$
 The distinction is deliberate. `Delta_mu_eff` is what the raw line intercept
 contains. `Delta_mu` is the intercept after imposing the chosen `A0`.
 
+The important plotting point is that the **actual least-squares regression is
+performed only on this linearized quantity** `y(E)` versus `E`. In each
+`outputs/fits/fit_spectrum_XX.png`:
+
+- the **bottom panel** is the object that is actually fit,
+- the **top panel** shows the raw GPL spectrum together with the model obtained
+  by back-transforming that lower-panel regression.
+
+So the dashed red curve in the top panel should not be read as "a line was fit
+directly on the log-intensity GPL plot". It was not. The reported `R^2` is the
+quality of the lower-panel linear regression in
+`ln[(h^3 c^2 / 2E^2) I_PL]` versus photon energy.
+
 ### 5.5 Why temperature is more trustworthy than density
 
 The code reports both temperature and density-related quantities, but they do
@@ -867,7 +880,43 @@ That is a data-processing choice with a clear physical rationale: the relevant
 comparison is multiplicative over a wide dynamic range, not additive over a
 narrow one.
 
-### 11.7 What the current Tsai comparison means
+### 11.7 How `Q` is extracted from the `P_th` vs `\Delta T` figure
+
+The `outputs/tsai_temperature_rise_vs_pth_density.png` figure is displayed as
+carrier temperature rise versus thermalized power density with a logarithmic
+`P_th` axis. The `Q` extraction is **not** obtained by fitting a straight line
+directly in those displayed axes.
+
+Instead, the code linearizes the Tsai-style thermalization relation as:
+
+$$
+P_{\mathrm{th}}\exp\left(\frac{E_{\mathrm{LO}}}{k_B T_c}\right) = Q(T_c-T_L) + b
+= Q\,\Delta T + b
+$$
+
+with:
+
+- `T_c = T_L + Delta T`,
+- `Q` as the thermalization coefficient,
+- `b` as a free intercept rather than forcing the line through the origin.
+
+The regression is performed on the linearized quantity
+`P_th exp(E_LO / k_B T_c)` versus `Delta T`. The curve shown on
+`outputs/tsai_temperature_rise_vs_pth_density.png` is the back-transformed
+result drawn on the original `Delta T` versus `P_th` axes, so it does not
+appear as a straight line in the displayed figure.
+
+With the present defaults and bundled dataset, the fitted `Q` values are:
+
+- experimental points: `Q ~= 1.22 x 10^7 W cm^-3 K^-1`, `R^2 ~= 0.978`
+- Tsai FD prediction: `Q ~= 1.26 x 10^7 W cm^-3 K^-1`, `R^2 ~= 0.999`
+- Tsai MB prediction: `Q ~= 1.19 x 10^7 W cm^-3 K^-1`, `R^2 ~= 0.999`
+
+These `Q` values are useful compact diagnostics of how steeply the thermalized
+power rises with carrier temperature under the Tsai-style LO-phonon activation
+factor. They are not a substitute for the full inverse-map comparison.
+
+### 11.8 What the current Tsai comparison means
 
 The code:
 
@@ -913,14 +962,18 @@ The main outputs are:
   channels.
 - `outputs/all_spectra_logscale.png`: raw spectra across all excitation
   intensities.
-- `outputs/fits/fit_spectrum_XX.png`: the chosen fit window and linearized
-  tail for each spectrum.
+- `outputs/fits/fit_spectrum_XX.png`: two-panel optical-fit diagnostic; the
+  lower panel is the actual linear regression on the linearized GPL tail, while
+  the upper panel shows the back-transformed model on the raw PL scale.
 - `outputs/parameters_vs_intensity.png`: extracted state variables versus pump
   intensity.
 - `outputs/thermalized_power_diagnostics.png`: thermalized-power diagnostics and
   per-carrier cooling quantities.
 - `outputs/recombination_channel_contributions.png`: radiative versus
   nonradiative channel comparison.
+- `outputs/tsai_temperature_rise_vs_pth_density.png`: experimental and
+  Tsai-predicted `Delta T` versus `P_th`, including back-transformed `Q`-fit
+  curves and annotated `Q` values from the linearized relation above.
 - `outputs/mb_validity_limit.png`, `outputs/mb_validity_scan.csv`,
   `outputs/mb_validity_limits.csv`: the photon-occupation MB diagnostic.
 - `outputs/tsai_forward_stateT_to_pth.csv`,

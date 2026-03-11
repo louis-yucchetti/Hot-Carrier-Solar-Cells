@@ -266,7 +266,7 @@ def plot_single_fit(
         1,
         figsize=_page_single_column_figsize(PAGE_TALL_FIG_HEIGHT_IN),
         sharex=False,
-        gridspec_kw={"height_ratios": [1.25, 1.0], "hspace": 0.18},
+        gridspec_kw={"height_ratios": [1.25, 1.0], "hspace": 0.22},
     )
     ax0, ax1 = axes
 
@@ -277,61 +277,6 @@ def plot_single_fit(
     envelope_fill_color = "#ce93d8"
     envelope_edge_color = "#6a1b9a"
 
-    if scan_domain_ev is not None:
-        ax0.axvspan(
-            scan_domain_ev[0],
-            scan_domain_ev[1],
-            color=scan_fill_color,
-            alpha=0.28,
-            zorder=0,
-            label="Full scan domain",
-        )
-        ax0.axvline(
-            scan_domain_ev[0], color=scan_edge_color, lw=1.0, ls=":", alpha=0.9, zorder=3
-        )
-        ax0.axvline(
-            scan_domain_ev[1], color=scan_edge_color, lw=1.0, ls=":", alpha=0.9, zorder=3
-        )
-    if fit_range_windows_ev:
-        for lo_ev, hi_ev in fit_range_windows_ev:
-            ax0.hlines(
-                y=0.06,
-                xmin=lo_ev,
-                xmax=hi_ev,
-                transform=ax0.get_xaxis_transform(),
-                color=envelope_edge_color,
-                lw=1.0,
-                alpha=0.28,
-                zorder=1,
-            )
-        lo_env = float(min(w[0] for w in fit_range_windows_ev))
-        hi_env = float(max(w[1] for w in fit_range_windows_ev))
-        coverage_pct = 100.0 * FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE
-        ax0.axvspan(
-            lo_env,
-            hi_env,
-            facecolor=envelope_fill_color,
-            alpha=0.16,
-            hatch="///",
-            edgecolor=envelope_edge_color,
-            lw=0.9,
-            zorder=1,
-            label=f"{coverage_pct:.0f}% AICc-weight window envelope",
-        )
-        ax0.axvline(lo_env, color=envelope_edge_color, lw=0.9, ls="--", alpha=0.8, zorder=3)
-        ax0.axvline(hi_env, color=envelope_edge_color, lw=0.9, ls="--", alpha=0.8, zorder=3)
-    ax0.axvspan(
-        fit_min_ev,
-        fit_max_ev,
-        facecolor=selected_fill_color,
-        alpha=0.36,
-        edgecolor=selected_edge_color,
-        lw=0.95,
-        zorder=2,
-        label="Selected fit window",
-    )
-    ax0.axvline(fit_min_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=4)
-    ax0.axvline(fit_max_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=4)
     ax0.plot(energy_ev, intensity, color="#1f4e79", lw=1.8, label="Experiment", zorder=5)
     ax0.plot(
         energy_ev,
@@ -339,12 +284,11 @@ def plot_single_fit(
         color="#d32f2f",
         lw=1.45,
         ls="--",
-        label="High-energy GPL fit",
+        label="GPL model",
         zorder=6,
     )
 
     style_axes(ax0, logy=True)
-    ax0.set_xlabel(r"Photon energy, $E$ (eV)")
     ax0.set_ylabel(r"PL intensity, $I_{\mathrm{PL}}$ (a.u.)")
     ax0.legend(loc="lower left", fontsize=LEGEND_FONT_SIZE)
     ax0.set_title(
@@ -383,29 +327,79 @@ def plot_single_fit(
     _raise_annotation(info_artist)
 
     y_all = linearized_signal(energy_ev[intensity > 0], intensity[intensity > 0])
+    if scan_domain_ev is not None:
+        ax1.axvspan(
+            scan_domain_ev[0],
+            scan_domain_ev[1],
+            color=scan_fill_color,
+            alpha=0.28,
+            zorder=0,
+            label="Full scan domain",
+        )
+        ax1.axvline(
+            scan_domain_ev[0], color=scan_edge_color, lw=1.0, ls=":", alpha=0.9, zorder=1
+        )
+        ax1.axvline(
+            scan_domain_ev[1], color=scan_edge_color, lw=1.0, ls=":", alpha=0.9, zorder=1
+        )
+    if fit_range_windows_ev:
+        for lo_ev, hi_ev in fit_range_windows_ev:
+            ax1.hlines(
+                y=0.06,
+                xmin=lo_ev,
+                xmax=hi_ev,
+                transform=ax1.get_xaxis_transform(),
+                color=envelope_edge_color,
+                lw=1.0,
+                alpha=0.28,
+                zorder=1,
+            )
+        lo_env = float(min(w[0] for w in fit_range_windows_ev))
+        hi_env = float(max(w[1] for w in fit_range_windows_ev))
+        coverage_pct = 100.0 * FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE
+        ax1.axvspan(
+            lo_env,
+            hi_env,
+            facecolor=envelope_fill_color,
+            alpha=0.16,
+            hatch="///",
+            edgecolor=envelope_edge_color,
+            lw=0.9,
+            zorder=1,
+            label=f"{coverage_pct:.0f}% AICc-weight window envelope",
+        )
+        ax1.axvline(lo_env, color=envelope_edge_color, lw=0.9, ls="--", alpha=0.8, zorder=2)
+        ax1.axvline(hi_env, color=envelope_edge_color, lw=0.9, ls="--", alpha=0.8, zorder=2)
+    ax1.axvspan(
+        fit_min_ev,
+        fit_max_ev,
+        facecolor=selected_fill_color,
+        alpha=0.36,
+        edgecolor=selected_edge_color,
+        lw=0.95,
+        zorder=2,
+        label="Selected fit window",
+    )
+    ax1.axvline(fit_min_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=3)
+    ax1.axvline(fit_max_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=3)
     ax1.plot(energy_ev[intensity > 0], y_all, color="0.35", lw=1.05, label="Linearized data")
 
     x_fit_ev = energy_ev[fit_mask]
     x_fit_j = x_fit_ev * E_CHARGE
     y_line = result.slope * x_fit_j + result.intercept
-    y_fit_data = linearized_signal(x_fit_ev, intensity[fit_mask])
-    ax1.scatter(
+    ax1.plot(
         x_fit_ev,
-        y_fit_data,
-        s=13,
-        color="#2e7d32",
-        alpha=0.8,
-        zorder=3,
-        label="Points used for fit",
+        y_line,
+        color="#d32f2f",
+        lw=1.5,
+        ls="-",
+        label="Linear regression",
     )
-    ax1.plot(x_fit_ev, y_line, color="#d32f2f", lw=1.5, ls="-", label="Linear regression")
-    if scan_domain_ev is not None:
-        ax1.axvspan(scan_domain_ev[0], scan_domain_ev[1], color="#b0bec5", alpha=0.12)
-    ax1.axvspan(fit_min_ev, fit_max_ev, color="0.65", alpha=0.18)
     style_axes(ax1)
     ax1.set_xlabel(r"Photon energy, $E$ (eV)")
     ax1.set_ylabel(r"$\ln\!\left(\frac{h^3 c^2}{2E^2}I_{\mathrm{PL}}\right)$")
-    ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax1.set_title("Linearized GPL tail", pad=4.0)
+    ax1.legend(loc="lower left", fontsize=LEGEND_FONT_SIZE)
 
     fig.subplots_adjust(left=0.11, right=0.98, bottom=0.09, top=0.94, hspace=0.18)
     save_figure(fig, outpath)
@@ -1749,9 +1743,9 @@ def plot_tsai_temperature_rise_vs_pth_density(
             zorder=3,
         )
         for fit_result, fit_source, color, linestyle, label in (
-            (q_fit_exp, dT_exp, "#263238", "--", "Experimental Q-fit"),
-            (q_fit_fd, dT_fd, "#1565c0", "-.", "FD Q-fit"),
-            (q_fit_mb, dT_mb, "#8e24aa", ":", "MB Q-fit"),
+            (q_fit_exp, dT_exp, "#263238", "--", "Experimental Q-fit (back-transformed)"),
+            (q_fit_fd, dT_fd, "#1565c0", "-.", "FD Q-fit (back-transformed)"),
+            (q_fit_mb, dT_mb, "#8e24aa", ":", "MB Q-fit (back-transformed)"),
         ):
             if fit_result is None:
                 continue
@@ -1789,7 +1783,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
             if line is not None
         ]
         if q_summary_lines:
-            q_text = "Linearized Q fit:\n" + "\n".join(q_summary_lines)
+            q_text = "Q from linearized fit:\n" + "\n".join(q_summary_lines)
             q_text_artist = ax0.text(
                 0.03,
                 0.97,
@@ -1953,8 +1947,8 @@ def plot_tsai_temperature_rise_vs_pth_density(
         zorder=4,
     )
     for fit_result, fit_source, color, linestyle, label in (
-        (q_fit_exp, dT_exp, "#263238", "--", "Experimental Q-fit"),
-        (q_fit_sim, dT_sim, "#1565c0", "-.", "Tsai Q-fit"),
+        (q_fit_exp, dT_exp, "#263238", "--", "Experimental Q-fit (back-transformed)"),
+        (q_fit_sim, dT_sim, "#1565c0", "-.", "Tsai Q-fit (back-transformed)"),
     ):
         if fit_result is None:
             continue
@@ -1992,7 +1986,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
         if line is not None
     ]
     if q_summary_lines:
-        q_text = "Linearized Q fit:\n" + "\n".join(q_summary_lines)
+        q_text = "Q from linearized fit:\n" + "\n".join(q_summary_lines)
         q_text_artist = ax0.text(
             0.03,
             0.97,
