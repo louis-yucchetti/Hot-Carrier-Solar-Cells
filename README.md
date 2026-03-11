@@ -1,961 +1,1061 @@
 # Hot-Carrier Analysis from Continuous-Wave Photoluminescence in GaAs
 
 This repository analyzes calibrated continuous-wave photoluminescence (CWPL)
-spectra from bulk GaAs and extracts steady-state hot-carrier quantities from
-them. The main outputs are:
+spectra from bulk GaAs and extracts a steady-state hot-carrier state from them.
+The code does not treat the spectra as generic lineshapes. It assumes that, in
+the high-energy tail, the emission follows the generalized Planck law and that
+the carrier population can be summarized by a common carrier temperature `T` and
+a quasi-Fermi level splitting `Delta_mu`. From those two optical quantities it
+reconstructs electron and hole chemical potentials, carrier density, absorbed
+and thermalized power, and finally compares the inferred thermalized power with
+an electron-LO-phonon cooling model based on Tsai 2018.
 
-- carrier temperature `T`,
-- quasi-Fermi level splitting `Delta_mu`,
-- electron and hole chemical potentials plus carrier density from both
-  Maxwell-Boltzmann (MB) and Fermi-Dirac (FD) carrier statistics,
-- a diagnostic for when MB is no longer self-consistent for the photon
-  occupation part of the generalized Planck law,
-- absorbed, recombination, and thermalized power densities,
-- a Tsai-style electron cooling comparison based on LO-phonon scattering.
+This README is written as a methods report. For each step it states what the
+code does, why that choice is physically reasonable for the bundled dataset, and
+what the approximation leaves out.
 
-The code is written as transparent research analysis code rather than as a
-black-box package. Most of the scientific logic lives in
-`hot_carrier/analysis.py` and `hot_carrier/tsai_model.py`, the workflow is
-orchestrated in `hot_carrier/pipeline.py`, and the user-facing settings are in
-`hot_carrier/config.py`.
+## 1. Scope and Current Numerical Regime
 
-## 1. Project Scope
-
-The repository currently contains one bundled GaAs dataset,
+The repository currently contains one bundled GaAs CWPL dataset,
 `GaAs bulk_PL_avg_circle_4pixs.txt`, one PLQY table,
-`GaAs bulk_PLQY_results.csv`, several reference PDFs in `literature/`, and a
-full set of generated outputs in `outputs/`.
+`GaAs bulk_PLQY_results.csv`, the analysis code under `hot_carrier/`, and the
+reference material under `literature/`.
 
-With the current configuration and the bundled data, the project processes:
+With the current configuration in `hot_carrier/config.py` and the bundled
+outputs in `outputs/`, the analysis operates in the following regime:
 
-| Item | Current value |
+| Quantity | Current value |
 | --- | --- |
-| Number of spectra | 22 |
-| Energy samples per spectrum | 141 |
-| Photon-energy range | `1.265` to `1.771 eV` |
+| Number of spectra | `22` |
+| Energy samples per spectrum | `141` |
+| Measured photon-energy range | `1.2651` to `1.7712 eV` |
 | Excitation-intensity range | `9.46e1` to `1.30e5 W cm^-2` |
+| PL peak-energy range | `1.4251` to `1.4350 eV` |
+| Selected fit-window lower bound | `1.4586` to `1.5537 eV` |
+| Selected fit-window upper bound | `1.7031` to `1.7662 eV` |
+| Selected points per fit | `49` to `71` |
+| Fit quality `R^2` | `0.99958` to `0.99995` |
 | Extracted temperature range | `298.9` to `378.1 K` |
-| Extracted `Delta_mu` range | `1.121` to `1.395 eV` |
+| Extracted `Delta_mu` range | `1.1212` to `1.3947 eV` |
 | MB carrier-density range | `5.47e15` to `1.70e18 cm^-3` |
+| FD carrier-density range | `5.45e15` to `1.20e18 cm^-3` |
+| PLQY range used in power balance | `0.23` to `5.80 %` |
 | Thermalized-power range | `2.21e5` to `2.98e8 W cm^-3` |
-| MB validity limit | `x* ~= -2.33` for a `5%` error threshold |
+| Thermalized fraction of absorbed power | `34.8` to `35.6 %` |
+| Conservative MB-validity limit | `x* ~= -2.33` at `5 %` error |
+| Experimental reduced-QFLS range | `-11.76` to `-0.94` |
 | Spectra beyond that MB limit | `9 / 22` |
-| Current Tsai comparison | MAE `~= 3.15 K`, bias `~= -0.68 K` |
+| Tsai inverse comparison, FD default | MAE `~= 3.31 K`, bias `~= -1.76 K` |
+| Tsai inverse comparison, MB comparison column | MAE `~= 3.15 K`, bias `~= -0.68 K` |
 
-Those numbers are not universal material parameters. They are simply the
-current output of this repository for the bundled dataset and the present
-settings in `hot_carrier/config.py`.
+These numbers are not universal GaAs constants. They are the present outputs of
+this specific code, with this specific dataset, under the current settings.
 
-## 2. Why This Problem Is Physically Interesting
+## 2. Scientific Question and Why PL Can Answer It
 
-Under strong optical pumping, photoexcited carriers can remain hotter than the
-lattice for long enough that a single lattice temperature is no longer an
-adequate description of the electronic system. In that regime, the carrier
-population is better summarized by at least two state variables:
+Under strong continuous-wave excitation, the electronic subsystem can remain
+hotter than the lattice even though the sample has reached a macroscopic steady
+state. In that regime, the lattice temperature alone is not enough to describe
+the emitted light. A more useful reduced description is:
 
-- a carrier temperature `T`, which controls the high-energy occupation tail,
-- a quasi-Fermi level splitting `Delta_mu`, which controls how far the carrier
-  system sits from thermal equilibrium.
+- a carrier temperature `T`, which controls the decay of the high-energy PL
+  tail,
+- a quasi-Fermi level splitting `Delta_mu`, which measures how far the carrier
+  population is driven from equilibrium.
 
-GaAs is a useful test case because it is a direct-gap semiconductor with strong
-radiative recombination near the band edge. That makes photoluminescence a
-practical probe of the carrier distribution. Under continuous-wave excitation,
-the system reaches a steady state, so one can relate optical observables to
-balance equations for generation, recombination, and cooling.
+Bulk GaAs is a good system for this analysis for three reasons:
 
-The main physical idea behind this repository is simple:
+1. It is a direct-gap semiconductor, so radiative recombination near the band
+   edge is strong enough to measure accurately.
+2. The bundled spectra are already calibrated in photon units, so the PL
+   intercept carries physical meaning rather than just arbitrary detector counts.
+3. The steady-state CW condition makes it reasonable to write balance equations
+   between absorbed power, recombination power, and thermalized power.
 
-1. Fit the high-energy PL tail to extract `T` and `Delta_mu`.
-2. Reconstruct the carrier state from those optical variables.
-3. Use that state to estimate how absorbed power is partitioned.
-4. Compare the experimental thermalized power to a microscopic cooling model.
+The code therefore follows a simple research logic:
 
-## 3. End-to-End Workflow
+1. Extract `T` and `Delta_mu` from the high-energy PL tail.
+2. Convert `(T, Delta_mu)` into `(mu_e, mu_h, n)`.
+3. Estimate how the absorbed laser power is partitioned between recombination
+   and thermalization.
+4. Ask whether that inferred thermalized power is consistent with a microscopic
+   electron cooling model.
 
-`main.py` calls `hot_carrier.pipeline.main()`, which runs the following steps:
+## 3. End-to-End Code Path
+
+`main.py` is intentionally minimal. It just calls
+`hot_carrier.pipeline.main()`. The pipeline then runs the following sequence:
 
 1. Validate the user configuration in `hot_carrier/config.py`.
-2. Load the semicolon-separated PL matrix and sort it by increasing energy.
-3. Plot the full family of raw spectra.
-4. Select a high-energy fit window for each spectrum.
-5. Fit the linearized generalized Planck tail.
-6. Extract `T`, `Delta_mu_eff`, and `Delta_mu`.
-7. Reconstruct `mu_e`, `mu_h`, and `n` with both MB and FD statistics.
-8. Estimate uncertainties from line-fit covariance, fit-window sensitivity, and
-   the assumed high-energy absorptivity `A0`.
-9. Compute absorbed, recombination, and thermalized power channels.
-10. Build the MB-validity diagnostic from the integrated generalized Planck law.
-11. Run the internal Tsai-model temperature workflow if enabled.
-12. Export tables and figures to `outputs/`.
+2. Load the semicolon-separated PL matrix with
+   `hot_carrier.analysis.load_spectra()`.
+3. Sort the energy axis in ascending order.
+4. Plot the raw spectra.
+5. Choose a high-energy fit window for each spectrum.
+6. Fit the linearized generalized Planck tail.
+7. Extract `T`, `Delta_mu_eff`, and `Delta_mu`.
+8. Reconstruct `mu_e`, `mu_h`, and `n` with both MB and FD carrier statistics.
+9. Build an uncertainty budget from line-fit covariance, fit-window
+   sensitivity, and `A0`.
+10. Compute absorbed, radiative, nonradiative, recombination, and thermalized
+    power channels.
+11. Diagnose when the MB approximation for the photon occupation has broken
+    down.
+12. Run the Tsai electron cooling workflow if enabled.
+13. Export all figures and CSV tables.
 
-That sequence is a good way to read the code as well: `pipeline.py` orchestrates
-the flow, `analysis.py` contains the core optical and thermodynamic analysis,
-`tsai_model.py` handles the cooling model, and `plotting.py` generates the
-figures.
+The scientific work is concentrated in two modules:
 
-## 4. Data Model and Expected Inputs
+- `hot_carrier/analysis.py`: optical extraction, carrier reconstruction,
+  uncertainty propagation, MB-validity scan, and power balance.
+- `hot_carrier/tsai_model.py`: Tsai Eq. 41 plus Eq. 48 cooling kernel, forward
+  map, inverse map, and temperature comparison.
 
-### 4.1 PL spectrum file
+## 4. Inputs, Units, and Implicit Experimental Assumptions
 
-The main input file is expected to be a semicolon-separated table with:
+### 4.1 PL spectra
 
-- the photon-energy axis in the first column, in `eV`,
-- one PL intensity column per excitation condition.
-
-The bundled file starts like this:
+The main data file is read as:
 
 ```text
-;0;1;2;...;21
-1.7712028208330721;I_0;I_1;I_2;...;I_21
-1.7661566589503570;I_0;I_1;I_2;...;I_21
-...
+pandas.read_csv(..., sep=";", index_col=0)
 ```
 
-The code loads this file with `pandas.read_csv(..., sep=";", index_col=0)` in
-`hot_carrier.analysis.load_spectra()`.
+The first column is the photon-energy axis in `eV`. Each additional column is a
+single spectrum measured at one excitation intensity.
+
+The code assumes:
+
+- the intensities are strictly proportional to emitted photon flux,
+- the detector response has already been corrected,
+- the energy calibration is reliable across the full fitting region.
+
+Those assumptions matter unevenly. The fitted temperature is mostly controlled
+by the slope of the tail and is therefore relatively insensitive to an overall
+scale factor. `Delta_mu`, by contrast, depends on the intercept and therefore on
+absolute calibration.
 
 ### 4.2 Excitation intensities
 
-The excitation intensities are not read from the spectrum file. They are set
-explicitly in `EXCITATION_INTENSITY_W_CM2` inside `hot_carrier/config.py`.
+The laser intensities are not stored in the PL file. They are supplied as the
+array `EXCITATION_INTENSITY_W_CM2` in `hot_carrier/config.py`. The pipeline
+checks that the number of intensities matches the number of spectra exactly.
 
-The number of intensity values must match the number of PL spectrum columns. The
-pipeline checks this and raises an error if the lengths differ.
+This explicit mapping is scientifically preferable to parsing intensity from a
+file name because:
+
+- it makes the mapping auditable,
+- it avoids hidden ordering assumptions,
+- it prevents accidental unit drift.
 
 ### 4.3 PLQY file
 
-An optional PLQY table can be supplied through `PLQY_RESULTS_CSV`. The code
-looks for columns such as:
+The optional PLQY file is resolved in
+`hot_carrier.pipeline._resolve_plqy_profiles()`.
 
-- `phiabs (photons/s)`,
-- `PLQY (%)` or `PLQY`,
-- `err_PLQY (%)` or compatible uncertainty names,
-- optionally an excitation-intensity column.
+The function tries, in order:
 
-The mapping logic in `hot_carrier.pipeline._resolve_plqy_profiles()` is:
+1. interpolation versus absorbed-photon scale,
+2. interpolation versus excitation intensity,
+3. row-aligned assignment,
+4. fallback to constant `PLQY_ETA` and `PLQY_ETA_SIGMA`.
 
-1. If a `phiabs` column exists and overlaps the experimental absorbed-photon
-   scale, interpolate PLQY versus `log10(phiabs)`.
-2. Otherwise, if an intensity column exists, interpolate PLQY versus
-   `log10(intensity)`.
-3. Otherwise, if the table is row-aligned with the spectra, use row order.
-4. Otherwise, fall back to the constant values `PLQY_ETA` and
-   `PLQY_ETA_SIGMA`.
+For the bundled dataset the code prints a warning that the `phiabs` scale does
+not overlap the experimental `phi_abs` scale and therefore falls back to the
+row-aligned interpretation:
 
-For the bundled PLQY file and current settings, the code falls back to the
-row-aligned option.
+```text
+table:GaAs bulk_PLQY_results.csv (row-aligned)
+```
 
-## 5. Optical Model: From PL Tail to `T` and `Delta_mu`
+That is the correct conservative choice for the present files. The PLQY table is
+labeled in absolute `photons/s`, while the power-balance stage works with
+area-normalized photon flux in `cm^-2 s^-1`. Without a beam area or another
+conversion factor, direct interpolation in `phiabs` would mix incompatible
+quantities.
+
+## 5. Optical Model: From the PL Tail to `T` and `Delta_mu`
 
 ### 5.1 Generalized Planck law
 
-The photoluminescence intensity is modeled with the generalized Planck law:
+The code models the emitted PL intensity as:
 
-```text
-I_PL(E) ~ [2 E^2 / (h^3 c^2)] * A(E) * {exp[(E - Delta_mu)/(k_B T)] - 1}^-1
-```
+$$
+I_{\mathrm{PL}}(E) \sim \frac{2E^2}{h^3 c^2} A(E)
+\left[\exp\left(\frac{E-\Delta\mu}{k_B T}\right)-1\right]^{-1}
+$$
 
-where:
+This is the generalized Planck law used throughout the hot-carrier PL
+literature. The underlying assumptions are standard:
 
-- `E` is photon energy,
-- `A(E)` is absorptivity,
-- `T` is carrier temperature,
-- `Delta_mu` is quasi-Fermi level splitting.
+- the carrier population is close enough to internal quasi-equilibrium that a
+  single carrier temperature is meaningful,
+- the electron and hole populations can be summarized by quasi-Fermi levels,
+- the optical transition matrix elements do not introduce sharp structure inside
+  the narrow fit window.
 
-In the high-energy tail, the Bose factor reduces to an exponential and the code
-assumes that `A(E)` is locally constant over the selected fit window:
+The code does not prove those assumptions from first principles. It takes them
+as the working model and then checks whether the measured tail is in fact close
+to linear after the standard transformation. The very high `R^2` values reported
+for all 22 fits are evidence that this reduced description is at least
+self-consistent on the fitted interval.
 
-```text
-I_PL(E) ~ [2 E^2 / (h^3 c^2)] * A0 * exp[-(E - Delta_mu)/(k_B T)]
-```
+### 5.2 Why only the high-energy tail is fitted
 
-This is the central approximation behind the optical extraction.
+The code does not fit the PL peak or the near-gap shoulder. It fits only the
+high-energy tail, for two independent reasons.
 
-### 5.2 Linearization
+First, the tail is the part of the spectrum most directly controlled by the
+Boltzmann factor. Near the peak, reabsorption, detailed spectral structure of
+`A(E)`, and small deviations from the simple asymptotic form matter more.
 
-The code fits the quantity
+Second, in the tail the Bose-Einstein denominator simplifies:
 
-```text
-y(E) = ln[(h^3 c^2 / (2 E^2)) * I_PL(E)] = m E + b
-```
+$$
+\left[\exp\left(\frac{E-\Delta\mu}{k_B T}\right)-1\right]^{-1}
+\approx
+\exp\left[-\frac{E-\Delta\mu}{k_B T}\right]
+$$
 
-using `hot_carrier.analysis.linearized_signal()` and a straight-line regression
-in `hot_carrier.analysis._compute_linear_fit_and_covariance()`.
+The present fits are comfortably inside that asymptotic regime. Across the 22
+selected windows, the lower fit bound satisfies:
 
-One implementation detail matters here: the energy axis is supplied in `eV`, but
-the regression itself is carried out in joules. That makes the fitted slope
-consistent with the relation
+$$
+\frac{E_{\mathrm{fit,min}}-\Delta\mu}{k_B T} = 4.85 \text{ to } 13.37
+$$
 
-```text
-T = -1 / (k_B m)
-```
+So even the least favorable fitted point is almost five thermal energies above
+`Delta_mu`. That is exactly the regime where the `-1` term is negligible and a
+straight-line fit is physically justified.
 
-The intercept yields an effective quasi-Fermi level splitting:
+### 5.3 Constant high-energy absorptivity
 
-```text
-Delta_mu_eff = (b k_B T) / e
-```
+After the high-energy approximation, the code assumes that absorptivity is
+locally constant over the fit window:
 
-and the code then corrects for the assumed high-energy absorptivity `A0`:
+$$
+I_{\mathrm{PL}}(E) \sim \frac{2E^2}{h^3 c^2} A_0
+\exp\left[-\frac{E-\Delta\mu}{k_B T}\right]
+$$
 
-```text
-Delta_mu = Delta_mu_eff - (k_B T / e) ln(A0)
-```
+This is the most consequential optical simplification in the repository.
 
-This distinction between `Delta_mu_eff` and `Delta_mu` is deliberate. The first
-contains the absorptivity contribution implicitly. The second is the reported
-QFLS after the nominal `A0` correction.
+Why the code makes this choice:
 
-### 5.3 What the slope and intercept really mean
+- there is no measured spectral absorptivity curve bundled with the repository,
+- a constant `A0` turns the optical inversion into a transparent linear problem,
+- for a relatively thick `950 nm` GaAs layer, the absorptivity in the upper
+  near-gap region is expected to vary much more slowly than in the immediate
+  Urbach-tail region.
 
-The temperature comes from the slope, so it is mainly controlled by the shape of
-the high-energy PL tail. `Delta_mu`, by contrast, comes from the intercept. That
-means it is much more sensitive to:
+Why that is reasonable here:
 
-- absolute PL intensity calibration,
-- detector-response corrections,
-- the assumed absorptivity `A0`,
-- any hidden multiplicative scale factor in the measured intensity.
+- the PL peaks lie at `1.425-1.435 eV`, very close to the configured room
+  temperature gap `E_g = 1.424 eV`,
+- the selected fit windows start `30-125 meV` above the PL peak, so they avoid
+  the most strongly curved near-edge region,
+- the lab note bundled with the repository states that an independent OptiPV
+  optical simulation gave a high-energy absorptivity interval `0.459-0.555`
+  over `1.50-1.70 eV` for the `950 nm` GaAs layer.
 
-That sensitivity propagates directly into `mu_e`, `mu_h`, and carrier density.
-For this reason, the temperature extraction is usually the most robust part of
-the optical fit, while density-related quantities require more caution.
+Why it is still a source of systematic error:
 
-## 6. Fit-Window Selection and Uncertainties
+- the actual selected windows span `1.4586-1.7662 eV`,
+- the supplied `A0` interval was estimated only on `1.50-1.70 eV`,
+- the code therefore extrapolates the flat-`A0` assumption slightly below and
+  above the interval from which `A0` was originally estimated.
 
-### 6.1 Automatic fit-window selection
+This approximation mostly affects `Delta_mu`, not `T`. A multiplicative change
+in `A0` shifts the intercept. It does not change the slope of the linearized
+tail, so the temperature is much more robust than the inferred carrier density.
 
-If `AUTO_SELECT_FIT_WINDOW = True`, the code searches within
-`WINDOW_SEARCH_MIN_EV` to `WINDOW_SEARCH_MAX_EV`. It can optionally start the
-search above the PL peak by adding `WINDOW_PEAK_OFFSET_EV`.
+### 5.4 Linearization used in the code
 
-Every contiguous candidate window is tested and kept only if it satisfies the
-configured conditions:
+The fitted quantity is:
 
-- enough data points,
-- positive intensities,
+$$
+y(E) = \ln\left[\frac{h^3 c^2}{2E^2} I_{\mathrm{PL}}(E)\right] = mE + b
+$$
+
+This transformation removes the deterministic `E^2` prefactor so that the
+remaining slope is controlled by the exponential tail itself.
+
+Implementation detail: the energy array is read in `eV`, but the regression is
+performed in joules. That is why the code can recover temperature directly from:
+
+$$
+T = -\frac{1}{k_B m}
+$$
+
+The intercept first gives:
+
+$$
+\Delta\mu_{\mathrm{eff}} = \frac{b k_B T}{e}
+$$
+
+and only then subtracts the absorptivity contribution:
+
+$$
+\Delta\mu = \Delta\mu_{\mathrm{eff}} - \frac{k_B T}{e}\ln(A_0)
+$$
+
+The distinction is deliberate. `Delta_mu_eff` is what the raw line intercept
+contains. `Delta_mu` is the intercept after imposing the chosen `A0`.
+
+### 5.5 Why temperature is more trustworthy than density
+
+The code reports both temperature and density-related quantities, but they do
+not have equal epistemic status.
+
+- `T` comes from the slope of a nearly straight line over `49-71` points with
+  `R^2 > 0.9995`.
+- `Delta_mu` comes from the intercept of that line and therefore inherits every
+  multiplicative calibration uncertainty, including the assumed `A0`.
+- `mu_e`, `mu_h`, and `n` are then reconstructed from `T` and `Delta_mu`, so
+  they inherit the intercept sensitivity as well.
+
+The practical consequence is that the code can make a fairly strong statement
+about the existence of hot carriers and a weaker statement about the exact
+carrier density unless `A(E)` is characterized more completely.
+
+## 6. How the Fitting Window Is Chosen and Why
+
+### 6.1 Search domain
+
+The automatic window search uses:
+
+- `WINDOW_SEARCH_MIN_EV = 1.45 eV`
+- `WINDOW_SEARCH_MAX_EV = 1.77 eV`
+- `WINDOW_PEAK_OFFSET_EV = 0.0 eV`
+
+The peaks in the present dataset lie between `1.425` and `1.435 eV`, so the
+effective search always begins above the PL peak even though the explicit peak
+offset is set to zero. This is a sensible choice:
+
+- the lower bound sits only `15-25 meV` above the peak, which keeps the search
+  close enough to the onset of the tail that the signal remains strong,
+- but it is still above the most strongly curved near-peak region where a
+  constant `A(E)` is least defensible,
+- the upper bound reaches the top of the measured energy axis, so the search is
+  free to use as much of the clean tail as the data justify.
+
+### 6.2 Candidate-window acceptance criteria
+
+Every contiguous candidate window inside the search domain is tested. The code
+keeps only windows that satisfy:
+
+- positive intensity at every point,
+- at least `WINDOW_MIN_POINTS = 18` points,
 - negative fitted slope,
-- minimum `R^2`,
-- optional physical temperature bounds.
+- `R^2 >= 0.995`,
+- `150 K <= T <= 1200 K`.
 
-The surviving windows are scored with the corrected Akaike information criterion
-(AICc):
+Each threshold has a physical role:
 
-```text
-AIC  = N ln(RSS/N) + 2k
-AICc = AIC + [2k(k + 1)] / (N - k - 1)
-```
+- Positive intensities are required because the logarithm is taken explicitly.
+- A minimum of 18 points prevents a visually straight but statistically fragile
+  3- or 4-point line from dominating the fit.
+- The slope must be negative because a hot PL tail should decay with energy.
+- The high `R^2` threshold enforces that the selected interval is genuinely
+  close to exponential.
+- The broad temperature bounds are not meant to encode prior belief about the
+  sample. They are only a guardrail against mathematically valid but physically
+  absurd line fits.
 
-with `k = 2` for slope and intercept. The selected fit window is the one with
-the smallest AICc.
+### 6.3 Why AICc is used instead of picking the widest or highest-`R^2` window
 
-This logic is implemented in:
+Among the acceptable windows, the code chooses the one with the smallest AICc:
 
-- `hot_carrier.analysis._build_scan_candidate_mask()`,
-- `hot_carrier.analysis._enumerate_window_fit_samples()`,
-- `hot_carrier.analysis.auto_select_fit_window()`,
-- `hot_carrier.analysis.fit_single_spectrum()`.
+$$
+\begin{aligned}
+\mathrm{AIC} &= N \ln(\mathrm{RSS}/N) + 2k \\
+\mathrm{AIC}_c &= \mathrm{AIC} + \frac{2k(k+1)}{N-k-1}
+\end{aligned}
+$$
 
-### 6.2 Uncertainty model
+with `k = 2` parameters.
 
-The code reports three uncertainty components for each fitted parameter:
+This is a better choice than maximizing `R^2` alone because:
 
-```text
-sigma_total^2 = sigma_chi2^2 + sigma_range^2 + sigma_A0^2
-```
+- on a narrow tail, many windows can have `R^2` values that are all extremely
+  close to one,
+- a trivially short window can fit almost perfectly but give an unstable slope,
+- AICc balances residual quality against sample size and therefore discourages
+  overfitting by too-short windows.
 
-The three pieces are:
-
-- `chi2`: covariance of the linear regression coefficients,
-- `range`: sensitivity to plausible alternative fit windows,
-- `A0`: uncertainty induced by the allowed high-energy absorptivity range.
-
-The fit-window term is not a Bayesian posterior. It is an objective
-window-sensitivity metric built from the AICc-weighted spread of acceptable
-windows around the chosen one.
-
-Importantly, the reported `range` uncertainty is computed from the full
-AICc-weighted ensemble of acceptable windows. The setting
-`FIT_RANGE_SCAN_PLOT_WEIGHT_COVERAGE` only controls how much cumulative AICc
-weight is shown in the plotted fit-window envelope, with `0.95` used as a
-visual default. It does not truncate the uncertainty calculation itself.
-
-The uncertainties are exported as separate columns in `fit_results.csv`, for
-example:
-
-- `temperature_err_chi2_k`,
-- `temperature_err_range_k`,
-- `temperature_err_a0_k`,
-- `temperature_err_total_k`.
-
-The same naming pattern is used for `qfls`, the MB quantities `mu_e`, `mu_h`,
-and carrier density, and the FD quantities `mu_e_fd`, `mu_h_fd`, and
-`carrier_density_fd`.
-
-## 7. Carrier-State Reconstruction
-
-### 7.1 Band model and reference energies
-
-The code assumes parabolic conduction and valence bands and computes the
-effective density of states as:
+In the present outputs every spectrum uses the mode:
 
 ```text
-N_c(T) = 2 * [(m_e* k_B T)/(2 pi hbar^2)]^(3/2)
-N_v(T) = 2 * [(m_h* k_B T)/(2 pi hbar^2)]^(3/2)
+auto_peak_offset|aicc
 ```
 
-The reported `mu_e` and `mu_h` are referenced to mid-gap, so the conduction and
-valence band edges sit at `+E_g/2` and `-E_g/2` in that convention.
+So no spectrum had to fall back to a manual or degenerate window.
 
-### 7.2 Maxwell-Boltzmann reconstruction
+### 6.4 What the chosen windows look like on this dataset
 
-Using charge neutrality `n = p` and `Delta_mu = mu_e + mu_h`, the code computes:
+The selected windows are not arbitrary. Across the 22 spectra, the code chose:
 
-```text
-mu_e = 0.5 * [Delta_mu - (k_B T / e) ln(N_c/N_v)]
-mu_h = 0.5 * [Delta_mu + (k_B T / e) ln(N_c/N_v)]
-n    = N_c * exp[((mu_e - E_g/2) e)/(k_B T)]
-```
+- lower bounds `1.4586-1.5537 eV`,
+- upper bounds `1.7031-1.7662 eV`,
+- `49-71` fitted points per spectrum.
 
-This is implemented in `hot_carrier.analysis.compute_mu_and_density_mb()`.
+Relative to the PL peak, the selected windows begin `30-125 meV` above the peak
+and extend `278-338 meV` above it. That is exactly what one would expect if the
+algorithm is locating a region where the spectrum has already crossed over to a
+clean exponential tail.
 
-### 7.3 Fermi-Dirac reconstruction
+### 6.5 Fit-window uncertainty and why it is treated separately
 
-The repository also solves the charge-neutral FD problem using the complete
-Fermi-Dirac integral of order one-half and a bisection search. This is
-implemented in:
+The final answer should not depend too strongly on one exact window boundary.
+For that reason the code computes a second ensemble over plausible neighboring
+windows using the looser settings:
 
-- `hot_carrier.analysis._fermi_dirac_half()`,
-- `hot_carrier.analysis.compute_mu_and_density_fd()`.
+- `FIT_RANGE_SCAN_MIN_POINTS = 12`
+- `FIT_RANGE_SCAN_MIN_R2 = 0.99`
 
-The optical fit itself does not change when FD is used. The fitted `T` and
-`Delta_mu` come from the PL tail either way. FD only changes the back-calculated
-carrier-state quantities `mu_e`, `mu_h`, and `n`.
+This looser ensemble is used only for uncertainty estimation, not for the
+central fit. The reason is straightforward:
 
-The repository now also propagates the same three optical uncertainty
-contributions into the FD state variables:
+- the best-fit window should be strict,
+- the uncertainty analysis should be broad enough to probe window sensitivity.
 
-- line-fit covariance (`chi2`),
-- fit-window sensitivity (`range`),
-- absorptivity uncertainty (`A0`).
+For the current dataset, each spectrum retains roughly `2071-2211` acceptable
+windows in this ensemble. The code then AICc-weights them and reports the RMS
+spread of the inferred parameters as the `range` uncertainty.
 
-### 7.4 Why both MB and FD are reported
+That is a principled replacement for the common but poorly documented habit of
+trying "a few other windows by hand."
 
-MB is convenient, fast, and analytically transparent. FD is more reliable once
-the state approaches degeneracy. In this repository:
+### 6.6 Total uncertainty model
 
-- both MB and FD carrier reconstructions are exported with propagated
-  uncertainties derived from the same fitted `T` and `Delta_mu`,
-- FD values are now the default quantities used in the per-carrier
-  power-balance terms and in the `Delta_mu`-based Tsai inversion,
-- MB companion values are still exported so the statistical closure can be
-  compared explicitly in the thermalized-power and Tsai diagnostics,
-- FD values show how much the reconstructed carrier state shifts when
-  degeneracy matters.
+For each reported parameter, the code combines three terms:
 
-That comparison becomes important at the high-intensity end of the dataset.
+$$
+\sigma_{\mathrm{total}}^2 = \sigma_{\chi^2}^2 + \sigma_{\mathrm{range}}^2 + \sigma_{A_0}^2
+$$
+
+Their meanings are different:
+
+- `chi2`: local statistical uncertainty of the chosen line fit,
+- `range`: sensitivity to the fact that the fit window is a modelling choice,
+- `A0`: systematic uncertainty from the assumed high-energy absorptivity.
+
+This separation matters physically. A fit can have tiny line-fit covariance and
+still be uncertain because another plausible window gives a slightly different
+slope or because `A0` is not perfectly known.
+
+## 7. Reconstructing `mu_e`, `mu_h`, and `n`
+
+### 7.1 Common thermodynamic model
+
+The code assumes parabolic conduction and valence bands with effective masses:
+
+- `m_e* = 0.067 m0`
+- `m_h* = 0.50 m0`
+
+and a fixed band gap:
+
+- `E_g = 1.424 eV`
+
+The reported chemical potentials are referenced to mid-gap, so the band edges
+are at `+E_g/2` and `-E_g/2`.
+
+Why this is reasonable:
+
+- the fitted PL tail is extracted close to the direct gap, where the effective
+  mass approximation is standard,
+- the extracted temperatures remain modest, `299-378 K`, so the relevant
+  thermal energies are only `26-33 meV`,
+- the PL peaks are themselves clustered near `1.424-1.435 eV`, consistent with
+  a room-temperature GaAs gap.
+
+What is left out:
+
+- temperature dependence of `E_g`,
+- band nonparabolicity,
+- light-hole and heavy-hole substructure,
+- doping-induced asymmetry.
+
+The code therefore reconstructs a clean reduced state, not the last word on the
+true many-body band structure.
+
+### 7.2 Why charge neutrality is imposed
+
+The inversion from `Delta_mu` to separate electron and hole chemical potentials
+is underdetermined unless one adds another condition. The code uses:
+
+$$
+n = p
+$$
+
+This is the usual steady-state equal-injection closure for optically excited,
+undriven bulk material. It is reasonable because the repository does not model a
+built-in electric field, a current-extracting junction, or strongly asymmetric
+doping. Each absorbed photon is therefore treated as creating one electron-hole
+pair, and the steady state remains close to charge neutrality.
+
+If the sample had strong doping, carrier extraction, or spatial separation, this
+closure would have to be generalized.
+
+### 7.3 Maxwell-Boltzmann reconstruction
+
+Under MB statistics, the code computes the effective densities of states:
+
+$$
+\begin{aligned}
+N_c(T) &= 2\left(\frac{m_e^* k_B T}{2\pi \hbar^2}\right)^{3/2} \\
+N_v(T) &= 2\left(\frac{m_h^* k_B T}{2\pi \hbar^2}\right)^{3/2}
+\end{aligned}
+$$
+
+and then solves analytically:
+
+$$
+\begin{aligned}
+\mu_e &= \frac{1}{2}\left[\Delta\mu - \frac{k_B T}{e}\ln\left(\frac{N_c}{N_v}\right)\right] \\
+\mu_h &= \frac{1}{2}\left[\Delta\mu + \frac{k_B T}{e}\ln\left(\frac{N_c}{N_v}\right)\right] \\
+n &= N_c \exp\left[\frac{(\mu_e - E_g/2)e}{k_B T}\right]
+\end{aligned}
+$$
+
+The attraction of the MB version is not just speed. It is also interpretability.
+The mass asymmetry enters through `ln(N_c/N_v)`, so one can see directly how the
+heavier hole mass pushes `mu_h` and `mu_e` apart even at fixed `Delta_mu`.
+
+### 7.4 Fermi-Dirac reconstruction
+
+The code also solves the full charge-neutral Fermi-Dirac problem with the
+complete `F_{1/2}` integral and a bisection search.
+
+This is not a cosmetic addition. It addresses a real issue in the present data:
+
+- the experimental reduced variable
+  $x = (\Delta\mu - E_g)/(k_B T)$ reaches $-0.94$ at the high-intensity end,
+- the repository's own MB-validity scan places a conservative `5 %` boundary at
+  $x^* \approx -2.33$,
+- therefore the most strongly pumped spectra are no longer safely in the MB
+  regime.
+
+The effect is visible in the exported densities:
+
+- MB density reaches `1.70e18 cm^-3`,
+- FD density reaches `1.20e18 cm^-3`.
+
+That direction of change is physically expected. Once degeneracy matters, the
+Pauli principle suppresses occupation growth compared with the classical MB
+formula, so MB tends to overestimate density at fixed `Delta_mu`.
+
+### 7.5 Why both MB and FD are kept
+
+The code exports both reconstructions for a reason:
+
+- MB is still useful as a transparent low-density baseline,
+- FD is safer once the system approaches degeneracy,
+- the disagreement between the two is itself a diagnostic of where classical
+  closure is no longer adequate.
+
+The current repository therefore uses FD by default where a single "best"
+per-carrier quantity is needed, but it keeps the MB companion values visible so
+that the statistical closure remains falsifiable.
 
 ## 8. MB Validity Diagnostic for the Photon Occupation
 
-The repository includes a separate MB-validity test based on the integrated
-generalized Planck law, not just on the carrier-density formulas.
+The repository contains a second MB check that is conceptually different from
+the MB-vs-FD carrier-density comparison above. Here the question is:
 
-The code evaluates:
+> When is it still safe to replace the Bose-Einstein photon occupation in the
+> generalized Planck law by its first Boltzmann term?
+
+To isolate that issue cleanly, the code uses a step absorber:
+
+$$
+A(E) = A_0 \, \Theta(E - E_g)
+$$
+
+and compares the integrated generalized Planck law computed with:
+
+- the exact Bose-Einstein occupation,
+- the MB approximation.
+
+Why a step absorber is used here:
+
+- it removes material-specific spectral structure from the diagnostic,
+- it makes the result depend only on the reduced variable
+  `x = (Delta_mu - E_g)/(k_B T)`,
+- it therefore answers a narrow but important question: when does the photon
+  occupation approximation itself fail?
+
+This diagnostic is intentionally not a full sample model. It is a conservative
+closure test.
+
+For the bundled data:
+
+- the conservative `5 %` threshold is $x^* \approx -2.33$,
+- the experimental points span $x = -11.76$ to $-0.94$,
+- `9` of the `22` spectra lie beyond that limit.
+
+So even if MB remains useful for low-intensity intuition, the high-intensity end
+of this dataset should not be interpreted as safely classical.
+
+## 9. Power Balance: From Excitation Intensity to Thermalized Power
+
+### 9.1 Algebra implemented in the code
+
+The power-balance stage in `hot_carrier.analysis.compute_power_balance_table()`
+uses:
+
+$$
+\begin{aligned}
+P_{\mathrm{abs}} &= A_{\mathrm{laser}} P_{\mathrm{exc}} \\
+\phi_{\mathrm{abs}} &= \frac{P_{\mathrm{abs}}}{E_{\mathrm{laser}}} \\
+\phi_{\mathrm{rad}} &= \eta \phi_{\mathrm{abs}} \\
+\phi_{\mathrm{nonrad}} &= (1-\eta)\phi_{\mathrm{abs}}
+\end{aligned}
+$$
+
+and then:
+
+$$
+\begin{aligned}
+P_{\mathrm{rec}} &= \phi_{\mathrm{nonrad}} E_{\mathrm{nonrad}}
+                 + \phi_{\mathrm{rad}} E_{\mathrm{rad}} \\
+P_{\mathrm{th}} &= P_{\mathrm{abs}} - P_{\mathrm{rec}}
+\end{aligned}
+$$
+
+Finally it converts `W cm^-2` to `W cm^-3` by dividing by the active-layer
+thickness `d = 950 nm`.
+
+### 9.2 Why this compact model is used
+
+This is a bookkeeping model, not a transport simulation. Its purpose is to
+translate the measured optical state and the supplied PLQY into the quantity
+needed for the Tsai comparison:
+
+$$
+P_{\mathrm{th,exp}}
+$$
+
+The code does not resolve spatial gradients, diffusion, photon recycling, or a
+full microscopic recombination spectrum. It uses the smallest model that still
+enforces both carrier-flux and energy balance.
+
+### 9.3 Why the code uses the nonradiative recombination-energy model
+
+The code assumes:
+
+$$
+E_{\mathrm{nonrad}} = E_g + 3 k_B T
+$$
+
+This is a physically motivated pair-energy estimate. In a 3D parabolic band,
+the mean kinetic energy of a classical carrier is `3/2 k_B T`. For a
+nonradiative electron-hole recombination event, both carrier kinetic energies
+are dumped back into the lattice along with the band-gap energy. That yields:
+
+$$
+E_g + \frac{3}{2} k_B T + \frac{3}{2} k_B T = E_g + 3 k_B T
+$$
+
+The assumption is therefore not arbitrary. It is the simplest thermal average
+consistent with the same parabolic-band picture already used elsewhere in the
+repository.
+
+### 9.4 Why the code uses the radiative recombination-energy model
+
+The code assumes:
+
+$$
+E_{\mathrm{rad}} = E_g + k_B T
+$$
+
+This is a compact near-edge estimate for the average emitted photon energy in
+radiative recombination. The key idea is that radiative recombination does not
+return the full pair thermal energy to the lattice. Part of that excess energy
+leaves as photon energy, and the spectral average of that emitted photon sits
+slightly above `E_g`.
+
+The code chooses the `+ k_B T` form because it is a standard near-edge thermal
+scale and keeps the power balance analytically transparent. It should be read as
+a spectral average approximation, not as a line-by-line radiative transfer
+calculation.
+
+The good news is that, in the bundled dataset, PLQY is low enough that this
+approximation does not dominate the energy balance. The radiative fraction of
+absorbed power is only `0.14-3.61 %`, whereas the nonradiative fraction is
+`60.8-64.3 %`. So the power balance is much more sensitive to `A_laser`, PLQY,
+and thickness than to the precise sub-gap correction on `E_rad`.
+
+### 9.5 Why the power is converted to a volume density
+
+Tsai's `du/dt` is an energy-density rate, not an area-normalized flux. That is
+why the code divides `P_th` by the active-layer thickness before comparing it to
+the Tsai cooling kernel.
+
+This step is physically necessary, not cosmetic. A direct comparison between
+`W cm^-2` from the experiment and `W cm^-3` from the microscopic model would be
+dimensionally wrong.
+
+### 9.6 What the power-balance stage does not claim
+
+The thermalized power reported here is model-derived. It is not a direct
+calorimetric measurement. It inherits assumptions about:
+
+- laser absorptivity at `532 nm`,
+- PLQY assignment,
+- active-layer thickness,
+- average recombination energies,
+- the single-temperature electronic picture itself.
+
+It is the best estimate that this reduced model can produce, not an exact
+observable.
+
+## 10. Why the Tsai Stage Is Electron-Only
+
+The Tsai workflow in this repository models intraband cooling by electrons only.
+That deserves explicit justification.
+
+For a direct optical transition in parabolic bands, the electron and hole are
+created at the same `|k|`, so their excess kinetic energies split as:
+
+$$
+\frac{E_{\mathrm{excess},e}}{E_{\mathrm{excess,total}}}
+= \frac{1/m_e^*}{1/m_e^* + 1/m_h^*}
+= \frac{m_h^*}{m_e^* + m_h^*}
+$$
+
+Using the masses configured in this repository:
+
+- `m_e* = 0.067`
+- `m_h* = 0.50`
+
+gives:
+
+- electron share $\approx 0.882$
+- hole share $\approx 0.118$
+
+So, in this reduced picture, about `88 %` of the excess kinetic energy is
+initially assigned to electrons. That is the physical reason the code treats
+electron cooling as the dominant hot-carrier channel.
+
+This does **not** mean the code rigorously subtracts the hole contribution from
+the measured thermalized power. It does not. It means the repository assumes
+that the experimental `P_th` is dominated by the electron channel strongly
+enough that an electron-only Tsai comparison is informative.
+
+That is a defensible first approximation in GaAs. It is not a proof that holes
+are negligible.
+
+## 11. Tsai Eq. 41 Plus Eq. 48 Cooling Workflow
+
+### 11.1 What is and is not implemented
+
+The repository does not reproduce Tsai's full photovoltaic device model. It
+implements the electron intraband cooling kernel and uses it as a consistency
+check against the experimentally inferred thermalized power.
+
+The steady-state identification is:
+
+$$
+P_{\mathrm{th,exp}} \approx -\left(\frac{du}{dt}\right)_{\mathrm{intra}}
+$$
+
+This is narrower than solving Tsai Eq. 3 together with a complete transport and
+`J-V` model. The comparison is still useful, but the interpretation must stay at
+that level.
+
+### 11.2 Equations used
+
+The implemented hierarchy is:
+
+$$
+\text{Eq. 34} \rightarrow \text{Eq. 41} \rightarrow \text{Eq. 48}
+$$
+
+with the steady-state hot-phonon relations between them.
+
+The code keeps the screened polar LO interaction, computes the mode-resolved
+electron-to-LO emission time `tau_c-LO^q`, and then integrates the net
+electron-LO energy transfer rate over `q`.
+
+### 11.3 Static screening and why it is acceptable here
+
+The screening model is static Thomas-Fermi:
+
+$$
+\varepsilon(q,0) = \varepsilon_0 \left(1 + \frac{q_s^2}{q^2}\right)
+$$
+
+with a default screening closure:
 
 ```text
-Phi = integral_{E_g}^infinity I_PC(E) dE
+TSAI_SCREENING_MODEL = "mb"
 ```
 
-for a step absorber:
+This is a pragmatic choice:
+
+- it matches the analytic structure used in Tsai's derivation,
+- it is numerically stable,
+- it captures the main trend that stronger carrier compressibility leads to
+  stronger screening and weaker electron-phonon coupling.
+
+The repository also allows a finite-difference FD compressibility
+(`"fd_fdiff"`), but the default stays MB because it is simpler and closer to the
+paper's compact form.
+
+This creates an intentional hybrid model in the default settings:
+
+- `Delta_mu -> mu_e` reconstruction for the Tsai grid uses FD,
+- screening itself still uses MB.
+
+That is not a coding mistake. It reflects two separate modelling layers:
+
+- one layer reconstructs the carrier state from the optical fit,
+- the other layer approximates the screening response entering the Fröhlich
+  matrix element.
+
+### 11.4 Why the `q` integration is done on a geometric grid
+
+The Fröhlich interaction scales like `1/q^2`, screening modifies the small-`q`
+region strongly, and the integral spans several decades in `q`. A geometric grid
+therefore makes more sense than a linear grid because it resolves the low-`q`
+structure without wasting most points at large `q`.
+
+The current settings are:
+
+- `TSAI_Q_MIN_CM1 = 3e4`
+- `TSAI_Q_MAX_CM1 = 1e8`
+- `TSAI_Q_POINTS = 520`
+
+`q_min` is kept strictly positive because the bare Fröhlich term diverges at
+`q = 0`; the exact zero mode is neither numerically stable nor physically the
+right object for a finite-bandwidth calculation.
+
+### 11.5 Why the default primary axis is `Delta_mu`
+
+The inverse Tsai workflow can be built on either `mu_e` or `Delta_mu`. The
+default is:
 
 ```text
-A(E) = A0 * Theta(E - E_g)
+TSAI_PRIMARY_INPUT = "delta_mu"
 ```
 
-and compares:
+This reduces circularity. If `mu_e` were used directly, the Tsai model would be
+fed a quantity that had already been reconstructed from the experimental `T`.
+Using `Delta_mu` instead leaves the Tsai stage to rebuild `mu_e(Delta_mu, T)`
+internally on each trial temperature.
 
-- the exact Bose-Einstein photon occupation,
-- the first Boltzmann term used in the MB approximation.
+The resulting map is:
 
-The diagnostic is expressed in terms of the reduced variable
+$$
+\Delta\mu,\; T \rightarrow \mu_e,\; n \rightarrow q_s
+\rightarrow \tau_{c\text{-}\mathrm{LO}}^q \rightarrow \left(\frac{du}{dt}\right)_{\mathrm{intra}}
+$$
 
-```text
-x = (Delta_mu - E_g) / (k_B T)
-```
+This is not fully model-independent, because the `Delta_mu -> mu_e` conversion
+still depends on the assumed band structure and carrier statistics. But it is
+less circular than supplying the experimental `mu_e` directly.
 
-The code then defines a threshold `x*` as the first point where the relative
-error
+### 11.6 Why the inverse map is built in `log10(P_th)`
 
-```text
-epsilon_MB = Phi_BE / Phi_MB - 1
-```
+The modeled thermalized power spans nearly three decades across the current
+dataset. Interpolating directly in linear `P_th` would over-resolve the
+high-power region and under-resolve the low-power region. The inverse map is
+therefore built in `log10(P_th)`.
 
-exceeds `MB_VALIDITY_REL_ERROR_LIMIT`, which is `5%` by default.
+That is a data-processing choice with a clear physical rationale: the relevant
+comparison is multiplicative over a wide dynamic range, not additive over a
+narrow one.
 
-Implementation:
+### 11.7 What the current Tsai comparison means
 
-- `hot_carrier.analysis.integrated_ipc_step_absorber_be()`,
-- `hot_carrier.analysis.integrated_ipc_step_absorber_mb()`,
-- `hot_carrier.analysis.build_mb_validity_scan()`.
+The code:
 
-For the current bundled dataset and configuration:
+1. builds a forward map `(state, T) -> P_th_model`,
+2. numerically inverts it to `(state, P_th) -> T`,
+3. evaluates that inverse map at the experimental `(Delta_mu_exp, P_th_exp)`,
+4. compares the predicted temperature with the optical temperature.
 
-- the conservative boundary is `x* ~= -2.33`,
-- the experimental points span roughly `x = -11.76` to `x = -0.94`,
-- `9` of the `22` spectra lie beyond that `5%` MB limit.
+With the present defaults:
 
-That is an important result. It means the MB back-extraction is still useful as
-an internally consistent baseline, but the high-intensity end of the dataset is
-already entering a regime where FD-based carrier interpretation is the safer
-choice.
+- `TSAI_LO_PHONON_LIFETIME_PS = 16.0`
+- `TSAI_PRIMARY_INPUT = "delta_mu"`
+- `TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`
+- `TSAI_SCREENING_MODEL = "mb"`
 
-## 9. Power-Balance Model
+the comparison yields:
 
-The repository uses a compact steady-state power-balance model. The starting
-relations are:
+- FD default closure: MAE $\approx 3.31\ \mathrm{K}$, bias $\approx -1.76\ \mathrm{K}$
+- MB comparison closure: MAE $\approx 3.15\ \mathrm{K}$, bias $\approx -0.68\ \mathrm{K}$
 
-```text
-phi_abs = phi_rad + phi_nonrad
-P_abs   = P_th + P_rad + P_nonrad
-```
+This is reasonably good agreement on a temperature rise that spans only a few
+tens of kelvin. The correct interpretation is:
 
-with:
+- the experimentally inferred thermalized-power density is broadly compatible
+  with a Tsai-type electron-LO cooling law under the chosen parameters.
 
-```text
-P_abs   = A_laser * P_exc
-phi_abs = P_abs / E_laser
-phi_rad = eta * phi_abs
-phi_nonrad = (1 - eta) * phi_abs
-```
+The incorrect interpretations would be:
 
-The recombination-channel energies are modeled as:
+- that the full Tsai paper has been reproduced,
+- that the LO-phonon lifetime has been uniquely identified,
+- that hole cooling is negligible by proof rather than by approximation,
+- that the optical power-balance model is now independently validated in all its
+  details.
 
-```text
-E_nonrad = E_g + 3 k_B T
-E_rad    = E_g + k_B T
-```
+Agreement here is a consistency test, not a uniqueness theorem.
 
-so that:
+## 12. Outputs and How to Read Them
 
-```text
-P_rec = phi_nonrad * E_nonrad + phi_rad * E_rad
-P_th  = P_abs - P_rec
-```
+The main outputs are:
 
-Area-normalized powers are converted to volumetric powers with the active-layer
-thickness `d`:
+- `outputs/fit_results.csv`: central per-spectrum table containing fitted
+  optical parameters, MB and FD state variables, uncertainties, and power
+  channels.
+- `outputs/all_spectra_logscale.png`: raw spectra across all excitation
+  intensities.
+- `outputs/fits/fit_spectrum_XX.png`: the chosen fit window and linearized
+  tail for each spectrum.
+- `outputs/parameters_vs_intensity.png`: extracted state variables versus pump
+  intensity.
+- `outputs/thermalized_power_diagnostics.png`: thermalized-power diagnostics and
+  per-carrier cooling quantities.
+- `outputs/recombination_channel_contributions.png`: radiative versus
+  nonradiative channel comparison.
+- `outputs/mb_validity_limit.png`, `outputs/mb_validity_scan.csv`,
+  `outputs/mb_validity_limits.csv`: the photon-occupation MB diagnostic.
+- `outputs/tsai_forward_stateT_to_pth.csv`,
+  `outputs/tsai_inverse_pth_state_to_temperature.csv`,
+  `outputs/tsai_du_dt_samples_at_experimental_state.csv`,
+  `outputs/tsai_temperature_comparison.csv`: the Tsai forward and inverse maps
+  plus the experimental comparison.
 
-```text
-P_vol = P_area / d_cm
-```
+The most important columns in `fit_results.csv` are:
 
-This model is implemented in `hot_carrier.analysis.compute_power_balance_table()`.
-The function also propagates first-order uncertainties from:
-
-- absorptivity at the laser wavelength,
-- PLQY,
-- extracted temperature.
-
-The volumetric power channels themselves do not depend on MB versus FD carrier
-statistics. The statistics choice only enters the derived per-carrier cooling
-quantities through the carrier density. The code now exports both:
-
+- `temperature_k`, `qfls_ev`
+- `mu_e_ev`, `mu_h_ev`, `carrier_density_cm3`
+- `mu_e_fd_ev`, `mu_h_fd_ev`, `carrier_density_fd_cm3`
+- `temperature_err_total_k`, `qfls_err_total_ev`,
+  `carrier_density_fd_err_total_cm3`
+- `absorbed_power_w_cm3`, `recombination_power_w_cm3`,
+  `thermalized_power_w_cm3`
 - `thermalized_power_per_carrier_mb_ev_s`,
-- `thermalized_power_per_carrier_fd_ev_s`,
+  `thermalized_power_per_carrier_fd_ev_s`
+- `fit_min_ev`, `fit_max_ev`, `n_points_fit`, `r2`, `fit_range_samples`
 
-and uses FD by default for the generic
-`thermalized_power_per_carrier_ev_s` column through
-`POWER_BALANCE_CARRIER_STATISTICS = "fd"`.
+The most important columns in `tsai_temperature_comparison.csv` are:
 
-The result is a useful energy-partition diagnostic, but it is intentionally
-compact. It is not a full transport model, and it does not include spatial
-gradients, diffusion, or a microscopic treatment of all recombination channels.
+- `delta_mu_ev`
+- `temperature_k_exp`
+- `p_th_exp_w_cm3`
+- `temperature_sim_k`
+- `temperature_error_k`
+- the MB and FD companion columns for `mu_e` and carrier density
 
-## 10. Tsai Eq. 41 Plus Eq. 48 Cooling Workflow
+## 13. Configuration Values That Matter Most
 
-### 10.1 What this section is really about
+Most settings can be grouped by scientific role.
 
-The repository does **not** implement Tsai's full photovoltaic-device model in
-the same self-consistent way as the paper. What it does implement is the
-electron intraband cooling kernel from the paper and then compare that kernel to
-the experimentally inferred thermalized-power channel.
+### 13.1 Optical fit
 
-That distinction matters.
+- `AUTO_SELECT_FIT_WINDOW`
+- `WINDOW_SEARCH_MIN_EV`, `WINDOW_SEARCH_MAX_EV`
+- `WINDOW_MIN_POINTS`, `WINDOW_MIN_R2`
+- `FIT_RANGE_SCAN_MIN_POINTS`, `FIT_RANGE_SCAN_MIN_R2`
 
-In the paper, the starting point is the carrier energy-density balance
-(Tsai Eq. 3):
+These control how aggressively the code searches for and stress-tests the
+exponential tail.
 
-```text
-du/dt = (1/L) * (p_gen - p_rec - J·V) + (du/dt)_intra
-```
+### 13.2 High-energy absorptivity
 
-where:
+- `A0_HIGH_ENERGY_MIN = 0.459`
+- `A0_HIGH_ENERGY_MAX = 0.555`
+- `ASSUMED_A0 = 0.507`
+- `A0_SIGMA = (A0_max - A0_min) / sqrt(12)` for the default `"uniform"` model
 
-- `u` is carrier energy density,
-- `p_gen` is the incoming optical power flux,
-- `p_rec` is the interband recombination power flux,
-- `J·V` is the extracted electrical power flux,
-- `L` is the active-region thickness,
-- `(du/dt)_intra` is the intraband carrier cooling term, dominated here by
-  electron interaction with LO phonons.
+This is the most important optical systematic because it shifts `Delta_mu`
+directly.
 
-At steady state, Eq. 3 becomes
+The use of a uniform uncertainty model is justified by the information actually
+available in the repository: only an interval is given, not a best-resolved
+spectral profile or a reason to prefer one value inside that interval over
+another.
 
-```text
-- (du/dt)_intra = (p_gen - p_rec - J·V) / L
-```
+### 13.3 Carrier thermodynamics
 
-Tsai uses that relation inside a device model. This repository uses it in a
-more restricted way:
+- `EG_EV = 1.424`
+- `M_E_EFF = 0.067`
+- `M_H_EFF = 0.50`
 
-1. The optical analysis first infers an experimental thermalized power density
-   `P_th_exp` from the PL data.
-2. The Tsai workflow computes a modeled intraband cooling power density
-   `P_th_model = - (du/dt)_intra`.
-3. The comparison is then made through the identification
+These parameters govern the `Delta_mu -> (mu_e, mu_h, n)` inversion and also
+enter the physical argument for electron-dominated excess-energy partitioning.
 
-```text
-P_th_exp  ~=  - (du/dt)_intra
-```
+### 13.4 Power balance
 
-This is scientifically useful, but it is not identical to solving Tsai's full
-Eq. 3 together with a full transport and `J-V` model.
+- `LASER_WAVELENGTH_NM = 532.0`
+- `ABSORPTIVITY_AT_LASER = 0.625`
+- `PLQY_RESULTS_CSV = "GaAs bulk_PLQY_results.csv"`
+- `ACTIVE_LAYER_THICKNESS_NM = 950.0`
 
-### 10.2 Physical picture in plain language
+These settings determine the experimental `P_th` that the Tsai stage tries to
+match.
 
-The physical idea is simple:
+### 13.5 Tsai workflow
 
-- hot carriers have excess kinetic energy above the lattice temperature,
-- in GaAs, electrons lose that excess energy mainly by emitting longitudinal
-  optical (LO) phonons,
-- those LO phonons do not disappear instantly,
-- if the LO phonons live long enough, they build up a nonequilibrium
-  population and can be reabsorbed,
-- that reabsorption slows carrier cooling.
+- `TSAI_LO_PHONON_ENERGY_EV = 0.03536`
+- `TSAI_LO_PHONON_LIFETIME_PS = 16.0`
+- `TSAI_PRIMARY_INPUT = "delta_mu"`
+- `TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`
+- `TSAI_SCREENING_MODEL = "mb"`
+- `TSAI_Q_MIN_CM1`, `TSAI_Q_MAX_CM1`, `TSAI_Q_POINTS`
 
-So the cooling rate is controlled by a competition:
+These settings control the microscopic cooling law and therefore the simulated
+temperature.
 
-- faster electron -> LO phonon emission increases cooling,
-- stronger screening weakens the electron-phonon interaction and decreases
-  cooling,
-- longer LO-phonon lifetime makes hot-phonon reabsorption stronger and also
-  decreases cooling.
+## 14. Limitations That Matter Scientifically
 
-This is why Tsai's model is more realistic than a single fixed energy-relaxation
-time. The cooling rate is not a constant. It depends on carrier temperature,
-carrier density, chemical potential, screening, and LO-phonon lifetime.
+The current workflow is coherent, but it remains a reduced model. The most
+important limitations are:
 
-### 10.3 Which equations from Tsai are used
+1. `A(E)` is treated as constant in the fit window. This is the dominant optical
+   simplification.
+2. `E_g` is fixed at `1.424 eV` rather than made temperature dependent.
+3. The carrier-state reconstruction uses parabolic bands and charge neutrality.
+4. The MB-validity scan uses a step absorber to isolate photon-occupation error,
+   so it is deliberately generic rather than sample-specific.
+5. The power-balance stage uses average recombination energies, not a spectral
+   recombination integral.
+6. The Tsai comparison is electron-only and treats `tau_LO` as an effective
+   input parameter.
+7. Screening is static Thomas-Fermi rather than a full dynamic dielectric
+   treatment.
+8. The Tsai stage currently has no propagated uncertainty band.
 
-The implementation follows the paper's hierarchy:
+None of these points invalidates the present analysis. They define its
+interpretation domain.
 
-```text
-Eq. 3  ->  Eq. 48  ->  Eq. 41  ->  Eq. 35  ->  Eq. 34
-```
+## 15. Highest-Value Improvements
 
-with the steady-state hot-phonon steps of Eqs. 39, 40, 46, and 47 used in
-between.
+If this repository is meant to become a stronger research tool, the highest
+value improvements are:
 
-#### Eq. 34: bare polar-LO interaction
-
-For the channel actually used in this repository, Tsai keeps only the polar LO
-phonon matrix element from Eq. 34:
-
-```text
-|M_q|^2 = [e^2 ħω_LO / (2 ε0 q^2 V)] * (1/ε_inf - 1/ε_static)
-```
-
-This is the Fröhlich interaction for polar optical phonons.
-
-Interpretation:
-
-- the coupling is strongest at small `q` because of the `1/q^2` factor,
-- it is stronger in more polar materials through
-  `(1/ε_inf - 1/ε_static)`,
-- only the LO channel is kept because Tsai argues, and the code follows, that
-  it dominates energy relaxation in GaAs.
-
-In code, this is the `base` term in
-`hot_carrier.tsai_model._screened_matrix_element_sq_times_volume_j2()`.
-
-#### Eq. 35 plus Eq. 37-38: screening
-
-Tsai then screens the matrix element through Eq. 35:
-
-```text
-|M_q^screen|^2 = |M_q|^2 * |ε0 / ε_screen(q, ω)|^2
-```
-
-The repository does **not** use the full dynamic Lindhard dielectric function of
-Eq. 36. It uses Tsai's static Thomas-Fermi limit from Eqs. 37-38:
-
-```text
-ε_screen(q, 0) = ε0 * (1 + q_s^2 / q^2)
-q_s^2 = [e^2 / (ε0 ε_static)] * (∂n/∂μ)
-```
-
-Therefore the code evaluates
-
-```text
-|M_q^screen|^2 = |M_q|^2 / (1 + q_s^2 / q^2)^2
-```
-
-The screening wave number `q_s` is computed in
-`hot_carrier.tsai_model._screening_wave_number_m1()`.
-
-Two distinct approximations appear here:
-
-- `TSAI_SCREENING_MODEL = "mb"`:
-
-```text
-∂n/∂μ = n / (k_B T)
-```
-
-- `TSAI_SCREENING_MODEL = "fd_fdiff"`:
-  `∂n/∂μ` is evaluated numerically by finite differences from the FD carrier
-  density.
-
-This is separate from the choice of how `mu_e` is reconstructed from
-`Delta_mu`. Those are two different model layers.
-
-#### Eq. 41: mode-resolved LO-phonon emission time
-
-With the screened interaction, Tsai derives the explicit emission time for each
-phonon wave number `q`:
-
-```text
-1/τ_c-LO^q =
-    [m_c^2 k_B T_c |M_q^screen|^2 V_c / (π ħ^5 q)]
-    * ln[(1 + exp(η_c - ε_min + ε_LO)) / (1 + exp(η_c - ε_min))]
-```
-
-with
-
-```text
-η_c   = μ_c / (k_B T_c)
-ε_LO  = ħω_LO / (k_B T_c)
-ε_min = ħ^2 k_min^2 / (2 m_c k_B T_c)
-k_min = q/2 + m_c ω_LO / (ħ q)
-```
-
-Interpretation:
-
-- `τ_c-LO^q` is the characteristic time for electrons to emit LO phonons of a
-  given wave number `q`,
-- the logarithm is the Fermi-statistics phase-space factor,
-- `ε_min` enforces the kinematic threshold for a carrier to emit an LO phonon
-  while conserving energy and momentum,
-- stronger screening increases `τ_c-LO^q`, meaning slower cooling.
-
-This is implemented in `hot_carrier.tsai_model._tau_c_lo_q_seconds()`.
-
-One important project-specific detail is that the repository stores `mu_e`
-relative to mid-gap, while Eq. 41 uses the electron chemical potential relative
-to the conduction-band edge. The code therefore converts
-
-```text
-μ_c = μ_e - E_g/2
-```
-
-before evaluating Eq. 41.
-
-#### Eq. 48: total intraband cooling rate with hot-phonon bottleneck
-
-Tsai then combines carrier emission with LO-phonon decay and obtains the
-steady-state intraband cooling rate:
-
-```text
-(du/dt)_intra =
-    - (1 / 2π^2) ∫ dq q^2 ħω_LO [N_q(T_c) - N_q(T_L)] / [τ_c-LO^q + τ_LO]
-```
-
-where
-
-```text
-N_q(T) = 1 / [exp(ħω_LO / k_B T) - 1]
-```
-
-is the Bose-Einstein occupation from Eq. 40.
-
-This expression is the compact result of the hot-phonon part of the paper:
-
-- Eq. 39 introduces carrier-driven LO-phonon emission,
-- Eq. 44 introduces LO-phonon decay,
-- Eq. 46 gives the steady-state nonequilibrium phonon population,
-- Eq. 47 gives the net LO emission rate,
-- Eq. 48 inserts that result into the carrier energy-loss integral.
-
-Interpretation:
-
-- if `T_c > T_L`, then `N_q(T_c) > N_q(T_L)`, so carriers tend to emit net LO
-  phonons and lose energy,
-- if `τ_LO` is long, the denominator becomes larger and cooling slows down,
-- if `τ_c-LO^q` is large because screening is strong, cooling also slows down.
-
-In code, Eq. 48 is implemented in
-`hot_carrier.tsai_model.compute_du_dt_intra_electron_w_cm3()`.
-
-The code also reports an effective energy-relaxation time associated with the
-right-hand side of Eq. 48:
-
-```text
-τ_E = [u(T_c) - u(T_L)] / [-(du/dt)_intra]
-```
-
-In implementation terms, `tau_c_lo_energy_s` is obtained as the ratio of the
-Eq. 48 numerator-like integral to `-(du/dt)_intra` over the same numerical `q`
-grid, so it should be read as the code's effective Tsai-style relaxation time.
-
-### 10.4 How the paper equations are translated into code
-
-The implementation is deliberately narrower than the full paper:
-
-- only **electrons** are cooled explicitly,
-- only **polar LO phonons** are retained,
-- screening is **static Thomas-Fermi**, not full dynamic Lindhard,
-- the `q` integral from `0` to `∞` is approximated on a finite geometric grid
-  from `TSAI_Q_MIN_CM1` to `TSAI_Q_MAX_CM1`,
-- the LO-phonon lifetime is supplied as an effective input
-  `TSAI_LO_PHONON_LIFETIME_PS` rather than computed microscopically from
-  Eq. 45,
-- the code evaluates the steady-state closed form of Eq. 48 directly instead of
-  evolving the phonon population dynamically in time.
-
-The main implementation path is:
-
-- `_screened_matrix_element_sq_times_volume_j2()`: Eq. 34 plus static-screening
-  reduction,
-- `_screening_wave_number_m1()`: Eq. 38 under MB or FD finite-difference
-  closure,
-- `_tau_c_lo_q_seconds()`: Eq. 41,
-- `compute_du_dt_intra_electron_w_cm3()`: Eq. 48,
-- `_compute_forward_grid()`: evaluates the model on a `(state, T)` grid,
-- `_build_inverse_grid()` and `_build_temperature_predictor()`: numerically
-  invert the forward map,
-- `run_tsai_temperature_workflow()`: compare the inverse model to the
-  experiment.
-
-The sign convention is:
-
-```text
-(du/dt)_intra < 0  for cooling
-P_th_model        = max( - (du/dt)_intra , 0 )
-```
-
-so all plotted thermalized powers are non-negative.
-
-### 10.5 Why the default primary axis is `Delta_mu`
-
-By default, `TSAI_PRIMARY_INPUT = "delta_mu"`. This choice is a practical
-anti-circularity measure.
-
-If `mu_e` were used directly as the primary input, one would feed the Tsai model
-a quantity that is already reconstructed from the optical fit and therefore
-already depends on the measured carrier temperature.
-
-Instead, the default workflow uses the experimental `Delta_mu` and reconstructs
-`mu_e(Delta_mu, T)` internally for each trial temperature on the Tsai grid:
-
-```text
-Delta_mu, T  ->  mu_e, n  ->  q_s  ->  τ_c-LO^q  ->  (du/dt)_intra
-```
-
-That reconstruction uses the same equal-injection carrier-state model as the
-rest of the repository:
-
-- MB closure from `analysis.compute_mu_and_density_mb()`, or
-- FD closure from `analysis.compute_mu_and_density_fd()`.
-
-The current default is
-`TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`, but MB comparison columns are also
-exported.
-
-This reduces circularity, but it does **not** remove all model dependence.
-`Delta_mu` itself still comes from the optical fit, and the `Delta_mu -> mu_e`
-mapping still depends on the assumed band structure and carrier statistics.
-
-### 10.6 How the comparison to experiment is actually done
-
-The experimental side of the comparison comes from the earlier optical and
-power-balance stages of the repository. For each spectrum, the code already has:
-
-- `temperature_k_exp` from the PL-tail fit,
-- `delta_mu_ev` from the same optical reconstruction,
-- `p_th_exp_w_cm3 = thermalized_power_w_cm3` from the power-balance model.
-
-The crucial identification is:
-
-```text
-p_th_exp_w_cm3  ~=  p_th_model_w_cm3  =  - (du/dt)_intra
-```
-
-The workflow is then:
-
-1. Build a grid in either `(Delta_mu, T)` or `(mu_e, T)`.
-2. Compute `p_th_model_w_cm3` on that grid from Eq. 48.
-3. For each fixed state value, invert the monotonic relation
-
-```text
-(state, T) -> p_th_model
-```
-
-   into
-
-```text
-(state, p_th_model) -> T
-```
-
-   using interpolation in `log10(p_th)`.
-4. Evaluate that inverse map at the experimental pairs
-
-```text
-(delta_mu_exp, p_th_exp)
-```
-
-   or
-
-```text
-(mu_e_exp, p_th_exp)
-```
-
-   to obtain `temperature_sim_k`.
-5. Compare `temperature_sim_k` with the measured `temperature_k_exp`.
-
-This is why the Tsai workflow is an **inverse consistency test**:
-
-- if the paper-based cooling model predicts roughly the same temperature as the
-  optical fit, then the inferred thermalized power is consistent with that
-  cooling law,
-- if it does not, then some combination of the cooling model, screening choice,
-  phonon lifetime, or optical power-balance assumptions is inconsistent.
-
-### 10.7 What the exported Tsai files mean
-
-The main products are:
-
-- `outputs/tsai_forward_stateT_to_pth.csv`:
-  the forward map `(state, T) -> p_th_model`,
-- `outputs/tsai_inverse_pth_state_to_temperature.csv`:
-  the numerically inverted map `(state, p_th) -> T`,
-- `outputs/tsai_du_dt_samples_at_experimental_state.csv`:
-  Eq. 48 evaluated directly at the experimental state points,
-- `outputs/tsai_temperature_comparison.csv`:
-  simulated temperatures, residuals, and reconstructed state variables,
-- `outputs/tsai_temperature_rise_vs_pth_density.png`:
-  the main visual comparison.
-
-When `TSAI_PRIMARY_INPUT = "delta_mu"`, the comparison table includes both MB
-and FD reconstructions of:
-
-- experimental `mu_e` and carrier density,
-- simulated `mu_e` and carrier density,
-- Tsai-predicted temperatures and residuals.
-
-With the bundled dataset and current defaults:
-
-- `TSAI_LO_PHONON_LIFETIME_PS = 16.0`,
-- `TSAI_Q_MIN_CM1 = 3e4`,
-- `TSAI_Q_MAX_CM1 = 1e8`,
-- `TSAI_SCREENING_MODEL = "mb"`,
-- `TSAI_DELTA_MU_CARRIER_STATISTICS = "fd"`,
-
-the present comparison gives approximately:
-
-- FD default closure: MAE `~= 3.31 K`, bias `~= -1.76 K`,
-- MB comparison closure: MAE `~= 3.15 K`, bias `~= -0.68 K`.
-
-### 10.8 What this means scientifically, and what it does not mean
-
-If the Tsai-predicted and experimentally inferred temperatures agree reasonably
-well, the correct conclusion is:
-
-- the experimentally inferred thermalized-power density is broadly consistent
-  with an electron-LO-phonon cooling model of the Tsai type for the chosen
-  parameters and closures.
-
-The correct conclusion is **not**:
-
-- that the Tsai paper has been reproduced in full,
-- that the LO-phonon lifetime or screening model has been uniquely identified,
-- that the optical `P_th` extraction is model-free,
-- that all carrier heating in the sample is necessarily electron-only LO-phonon
-  cooling.
-
-The most important limitations are:
-
-- Eq. 3 is **not** solved here as a full device balance including a computed
-  `J·V` term,
-- the experimental `P_th` comes from the repository's optical power-balance
-  model, not from a direct calorimetric measurement,
-- holes are not cooled explicitly in the Tsai stage,
-- dynamic screening and coupled plasmon-phonon modes are not included,
-- `tau_LO` is treated as an effective parameter,
-- the inverse comparison inherits uncertainty from absorptivity, PLQY,
-  thickness, the optical fit, and the MB/FD carrier-state closure.
-
-That is why the Tsai workflow should be interpreted as a rigorous but still
-model-dependent consistency check between:
-
-- the optical state extracted from PL, and
-- a literature-based microscopic cooling law for electron -> LO-phonon energy
-  relaxation.
-
-## 11. Software Architecture
-
-The repository is small enough that each file has a clear role:
-
-- `main.py`: minimal entry point that calls `hot_carrier.pipeline.main()`.
-- `hot_carrier/config.py`: user-editable settings and physical constants.
-- `hot_carrier/pipeline.py`: top-level orchestration, file I/O, and output
-  export.
-- `hot_carrier/analysis.py`: optical fitting, MB and FD reconstruction,
-  uncertainties, MB-validity scan, and power balance.
-- `hot_carrier/tsai_model.py`: Tsai cooling model plus forward and inverse
-  grids.
-- `hot_carrier/plotting.py`: all figures and diagnostics.
-- `hot_carrier/models.py`: data classes used to assemble fit results cleanly.
-
-There is no command-line interface at the moment. The expected way to use the
-project is to edit `hot_carrier/config.py` and rerun `main.py`.
-
-## 12. Important Configuration Groups
-
-Most users only need to touch a small number of configuration blocks:
-
-- Data source: `FILENAME`, `EXCITATION_INTENSITY_W_CM2`
-- Optical fit: `AUTO_SELECT_FIT_WINDOW`, `FIT_ENERGY_*`, `WINDOW_*`
-- High-energy absorptivity: `A0_HIGH_ENERGY_MIN`, `A0_HIGH_ENERGY_MAX`,
-  `A0_UNCERTAINTY_MODEL`, `ASSUMED_A0`
-- Material parameters: `EG_EV`, `M_E_EFF`, `M_H_EFF`
-- Power balance: `LASER_WAVELENGTH_NM`, `ABSORPTIVITY_AT_LASER`, `PLQY_ETA`,
-  `PLQY_RESULTS_CSV`, `ACTIVE_LAYER_THICKNESS_NM`
-- MB diagnostic: `MB_VALIDITY_*`
-- Tsai workflow: `TSAI_ENABLE_SIMULATION`, `TSAI_PRIMARY_INPUT`,
-  `TSAI_DELTA_MU_CARRIER_STATISTICS`, `TSAI_LO_*`, `TSAI_Q_*`,
-  `TSAI_SCREENING_*`, `TSAI_*_GRID_*`
-
-Two settings are especially important from a physics point of view:
-
-- `ASSUMED_A0`, because it directly shifts the reported `Delta_mu`,
-- `PLQY_RESULTS_CSV` or `PLQY_ETA`, because they strongly affect the
-  recombination and thermalized-power partition.
-
-## 13. Environment and How to Run
-
-The current checked virtual environment uses Python `3.14.3`. The code imports:
-
-- `numpy`,
-- `pandas`,
-- `matplotlib`,
-- `scipy`.
-
-To run from the bundled environment:
+1. Replace constant `A0` by a measured or simulated spectral `A(E)`.
+2. Propagate uncertainty through the Tsai inverse stage.
+3. Add a temperature-dependent `E_g(T)` model.
+4. Save a full run manifest with configuration, package versions, and git
+   commit.
+5. Add regression tests on the bundled dataset.
+6. Extend the Tsai stage to include hole cooling or at least a controlled
+   electron-hole energy partition factor.
+
+## 16. How to Run
+
+The code is designed to be run from the repository root:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py
 ```
 
-To recreate a clean Windows environment from scratch:
+Or, from a clean environment:
 
 ```powershell
 py -3.14 -m venv .venv
@@ -964,168 +1064,26 @@ python -m pip install numpy pandas matplotlib scipy
 python main.py
 ```
 
-After a successful run, the pipeline rewrites the exported CSV files and figures
-in `outputs/`.
+The run overwrites the generated CSV tables and figures in `outputs/`.
 
-## 14. Outputs and How to Interpret Them
+## 17. Local References Used by This Repository
 
-### 14.1 Core outputs
+The main local references are:
 
-- `outputs/fit_results.csv`: main per-spectrum results table.
-- `outputs/all_spectra_logscale.png`: raw PL spectra, colored by excitation
-  intensity.
-- `outputs/fits/fit_spectrum_XX.png`: per-spectrum raw fit, selected window,
-  and linearized tail.
-- `outputs/parameters_vs_intensity.png`: `T`, `Delta_mu`, `mu_e`, `mu_h`, and
-  `n` versus excitation intensity.
-- `outputs/thermalized_power_diagnostics.png`: power diagnostics in state space
-  and per-carrier form, including MB-vs-FD carrier-density comparisons.
-- `outputs/recombination_channel_contributions.png`: direct comparison of
-  `P_rad` and `P_nonrad`, plus the `eta`-driven change in `P_rec` and `P_th`
-  relative to the `eta = 0` limit.
-- `outputs/mb_validity_limit.png`: exact BE versus MB integrated-GPL
-  comparison.
-- `outputs/mb_validity_scan.csv`: full MB-validity scan versus reduced
-  `Delta_mu`.
-- `outputs/mb_validity_limits.csv`: detected MB threshold `x*` for each
-  reference temperature.
+- [Tsai 2018 hot-carrier model](literature/Tsai_2018_Hot_Carrier_Model.pdf)
+- [Vezin 2024 CWPL note](literature/Vezin_2024_CWPL.pdf)
+- [Vezin 2025 hot-electron note](literature/Vezin_2025_Hot_Electrons.pdf)
+- [Vezin 2025 distinguishing note](literature/Vezin_2025_Distinguishing.pdf)
+- [Giteau 2020 hot-carrier reference](literature/Giteau_2020_Hot_Carriers.pdf)
+- [Local lab note used to set several analysis choices](Hot%20carrier%20properties%20extraction%20from%20PL%204th%20session.docx)
 
-### 14.2 Tsai outputs
+The lab note is especially relevant for the current implementation because it
+documents several choices that the code now formalizes:
 
-- `outputs/tsai_forward_stateT_to_pth.csv`: forward map from state and
-  temperature to modeled `P_th`.
-- `outputs/tsai_inverse_pth_state_to_temperature.csv`: inverse temperature map.
-- `outputs/tsai_du_dt_samples_at_experimental_state.csv`: cooling-rate samples
-  evaluated at experimental states.
-- `outputs/tsai_temperature_comparison.csv`: experimental and simulated
-  temperatures, errors, and reconstructed MB/FD state variables.
-- `outputs/tsai_temperature_rise_vs_pth_density.png`: main figure of merit,
-  `T - T_L` versus `P_th`, with MB and FD Tsai closures compared when
-  `TSAI_PRIMARY_INPUT = "delta_mu"`.
-
-### 14.3 The most important columns in `fit_results.csv`
-
-The results table is wide, but a small set of columns does most of the work:
-
-- optical fit quality:
-  `fit_min_ev`, `fit_max_ev`, `window_mode`, `n_points_fit`, `r2`,
-  `fit_range_samples`,
-- extracted state:
-  `temperature_k`, `qfls_effective_ev`, `qfls_ev`,
-  `mu_e_ev`, `mu_h_ev`, `carrier_density_cm3`,
-- FD comparison:
-  `mu_e_fd_ev`, `mu_h_fd_ev`, `carrier_density_fd_cm3`,
-- uncertainty columns:
-  all `*_err_chi2_*`, `*_err_range_*`, `*_err_a0_*`, `*_err_total_*`,
-  including `mu_e_fd_err_total_ev`, `mu_h_fd_err_total_ev`,
-  and `carrier_density_fd_err_total_cm3`,
-- power-balance outputs:
-  `absorbed_power_*`, `recombination_power_*`, `thermalized_power_*`,
-  `thermalized_power_per_carrier_mb_*`, `thermalized_power_per_carrier_fd_*`,
-  `thermalized_fraction`, `recombination_fraction`,
-  `radiative_fraction`, `nonradiative_fraction`,
-- closure checks:
-  `power_balance_closure_*`, `carrier_balance_closure_cm2_s`.
-
-Small closure values indicate that the algebraic bookkeeping is internally
-consistent.
-
-## 15. What the Current Results Suggest
-
-For the bundled dataset and present settings, the outputs tell a coherent story:
-
-- the extracted carrier temperature rises only moderately above room
-  temperature, from about `299 K` to `378 K`,
-- `Delta_mu` increases toward the band gap, reaching about `1.395 eV` while
-  `E_g` is set to `1.424 eV`,
-- carrier density rises strongly with excitation, reaching the `10^18 cm^-3`
-  range,
-- the MB-validity scan shows that the highest-intensity spectra are already on
-  the non-MB side of the repository's own `5%` integrated-photon criterion,
-- the current Tsai implementation reproduces the measured temperature rise
-  reasonably well for this dataset once the current GaAs-specific parameters are
-  used.
-
-The important scientific caution is that the MB and Tsai conclusions are not
-fully independent. In the current workflow, the Tsai inversion reconstructs
-`mu_e` from the same optical `T` and `Delta_mu` pair used for the carrier-state
-post-processing. The default closure is now FD, but the inferred agreement with
-Tsai still depends on that thermodynamic reconstruction and on the separate
-screening choice.
-
-## 16. Current Limitations and the Most Useful Next Steps
-
-### 16.1 Present limitations
-
-- The optical extraction assumes a locally constant absorptivity `A(E) ~= A0`
-  over the fit window.
-- The MB-validity diagnostic uses a step absorber, so it does not capture the
-  real spectral structure of GaAs absorptivity.
-- `Delta_mu` depends on the PL intercept and is therefore sensitive to absolute
-  intensity calibration and to the assumed `A0`.
-- The Tsai workflow is electron-only and does not represent a full coupled
-  electron-hole transport or recombination model.
-- Even with FD as the default `Delta_mu -> mu_e` closure, the Tsai workflow
-  still relies on a separate screening approximation, which remains MB by
-  default unless `TSAI_SCREENING_MODEL` is changed to `fd_fdiff`.
-- The repository has no automated test suite, no saved run manifest, and no
-  package metadata or dependency lockfile.
-
-### 16.2 Highest-value improvements
-
-If this project is going to evolve into a more reliable research tool, the most
-useful next steps are:
-
-1. Add a reproducibility manifest to every run.
-
-   Save the full configuration, Python version, package versions, and git commit
-   hash alongside the outputs. This is the lowest-effort improvement with the
-   highest immediate value.
-
-2. Add regression tests on the bundled dataset.
-
-   A small test suite should verify that `fit_results.csv`,
-   `mb_validity_limits.csv`, and the main Tsai metrics stay numerically stable
-   when the code changes.
-
-3. Propagate uncertainties through the Tsai stage.
-
-   Right now the uncertainty story covers the optical fit, MB and FD state
-   reconstruction, and the compact power balance. The next missing piece is
-   uncertainty on the simulated Tsai temperatures.
-
-4. Replace constant `A0` with a spectral `A(E)` treatment.
-
-   That would improve both the optical extraction and the MB-validity analysis.
-   It is one of the most important physics upgrades available.
-
-5. Move from tuned parameters to joint inference.
-
-   Parameters such as `A0`, PLQY, `tau_LO`, and screening choice are currently
-   set externally or tuned manually. A joint inference workflow would make the
-   results much more defensible.
-
-6. Extend the cooling model beyond the current electron-only implementation.
-
-   A fuller treatment should eventually include hole cooling, coupled carrier
-   dynamics, and possibly additional energy-loss channels.
-
-7. Replace file-edited configuration with a manifest or CLI.
-
-   Editing `hot_carrier/config.py` is workable for a single user, but it is not
-   ideal for batch studies or collaborative use.
-
-## 17. Literature Included in the Repository
-
-The `literature/` folder contains the local reference material used to frame the
-project, including:
-
-- `Tsai_2018_Hot_Carrier_Model.pdf`,
-- `Vezin_2024_CWPL.pdf`,
-- `Vezin_2025_Hot_Electrons.pdf`,
-- `Vezin_2025_Distinguishing.pdf`,
-- `Giteau_2020_Hot_Carriers.pdf`,
-- related supporting notes and papers.
-
-Those files are useful for checking the model assumptions and for extending the
-code, especially the CWPL interpretation and the Tsai cooling section.
+- fitting only the high-energy domain,
+- treating `A(E)` as `A0` there,
+- estimating `A0` from an external optical model,
+- reconstructing `mu_e`, `mu_h`, and `n` from `Delta_mu` through
+  electroneutrality,
+- comparing the experimental thermalized power to a Tsai-style microscopic
+  cooling law.
