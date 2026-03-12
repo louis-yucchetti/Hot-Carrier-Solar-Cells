@@ -690,10 +690,12 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         vmax=float(np.max(temp_all) + (1e-9 if np.max(temp_all) == np.min(temp_all) else 0.0)),
     )
 
+    # This diagnostic carries a colorbar on every panel, so use a wider canvas
+    # than the default single-column grid to keep each axes close to square.
     fig, axes = plt.subplots(
         2,
         2,
-        figsize=_page_single_column_figsize(PAGE_XL_GRID_FIG_HEIGHT_IN),
+        figsize=(9.2, 6.8),
     )
     ax00, ax01 = axes[0]
     ax10, ax11 = axes[1]
@@ -793,8 +795,8 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     cbar00 = fig.colorbar(
         cm.ScalarMappable(norm=temp_norm, cmap="viridis"),
         ax=ax00,
-        pad=0.02,
-        fraction=0.05,
+        pad=0.018,
+        fraction=0.045,
     )
     _style_colorbar(cbar00, r"$T$ (K)")
     _add_panel_label(ax00, "(a)")
@@ -836,7 +838,7 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         fontsize=MULTIPANEL_TITLE_FONT_SIZE,
         pad=4.0,
     )
-    cbar01 = fig.colorbar(s01, ax=ax01, pad=0.02, fraction=0.05)
+    cbar01 = fig.colorbar(s01, ax=ax01, pad=0.018, fraction=0.045)
     _style_colorbar(cbar01, r"$n$ (cm$^{-3}$)")
     _add_panel_label(ax01, "(b)")
 
@@ -935,8 +937,8 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     cbar10 = fig.colorbar(
         cm.ScalarMappable(norm=temp_norm, cmap="plasma"),
         ax=ax10,
-        pad=0.02,
-        fraction=0.05,
+        pad=0.018,
+        fraction=0.045,
     )
     _style_colorbar(cbar10, r"$T$ (K)")
     _add_panel_label(ax10, "(c)")
@@ -1019,7 +1021,7 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         pad=4.0,
     )
     ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
-    cbar11 = fig.colorbar(s11, ax=ax11, pad=0.02, fraction=0.05)
+    cbar11 = fig.colorbar(s11, ax=ax11, pad=0.018, fraction=0.045)
     _style_colorbar(cbar11, r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
     _add_panel_label(ax11, "(d)")
 
@@ -1029,12 +1031,12 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         fontsize=SUPTITLE_FONT_SIZE,
     )
     fig.subplots_adjust(
-        left=0.10,
-        right=0.97,
-        bottom=0.09,
+        left=0.08,
+        right=0.965,
+        bottom=0.085,
         top=0.89,
-        hspace=0.34,
-        wspace=0.48,
+        hspace=0.30,
+        wspace=0.32,
     )
     save_figure(fig, outpath)
     plt.close(fig)

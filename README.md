@@ -723,6 +723,11 @@ calorimetric measurement. It inherits assumptions about:
 It is the best estimate that this reduced model can produce, not an exact
 observable.
 
+In particular, the workflow does not solve for pump-induced lattice heating or a
+spatially varying lattice temperature. The lattice is treated as a fixed
+background reference, so the reported `P_th` quantifies carrier-side energy
+dissipation within that approximation, not a self-consistent lattice heat-up.
+
 ## 10. Why the Tsai Stage Is Electron-Only
 
 The Tsai workflow in this repository models intraband cooling by electrons only.
@@ -1022,6 +1027,17 @@ The main outputs are:
   `outputs/tsai_temperature_comparison.csv`: the Tsai forward and inverse maps
   plus the experimental comparison.
 
+When reading `outputs/thermalized_power_diagnostics.png`, the main caution is
+panel `(c)`, the per-carrier cooling-rate plot `P_th / n`. In the present
+interpretation, the fact that `P_th / n` first decreases, reaches a minimum,
+and then increases again should not be over-read as a robust intrinsic cooling
+signature. The more likely explanation is uncertainty in the GaAs sample doping,
+which is not independently pinned down in the current workflow and can shift the
+reconstructed carrier density. The workflow also does **not** include
+self-consistent lattice heating, so these diagnostics should be read as carrier
+heating above a fixed lattice background rather than a full carrier-lattice
+thermal model.
+
 The most important columns in `fit_results.csv` are:
 
 - `temperature_k`, `qfls_ev`
@@ -1157,12 +1173,14 @@ important limitations are:
    so it is deliberately generic rather than sample-specific.
 5. The power-balance stage uses average recombination energies, not a spectral
    recombination integral.
-6. The Tsai comparison is electron-only and treats `tau_LO` as a user-specified
+6. Pump-induced lattice heating is not included; `TSAI_LATTICE_TEMPERATURE_K`
+   is treated as a fixed background rather than solved self-consistently.
+7. The Tsai comparison is electron-only and treats `tau_LO` as a user-specified
    effective input parameter rather than an output uniquely identified by the
    dataset.
-7. Screening is static Thomas-Fermi rather than a full dynamic dielectric
+8. Screening is static Thomas-Fermi rather than a full dynamic dielectric
    treatment.
-8. The Tsai stage currently has no propagated uncertainty band, so the reported
+9. The Tsai stage currently has no propagated uncertainty band, so the reported
    temperature comparison does not quantify sensitivity to the chosen Tsai
    parameters.
 
