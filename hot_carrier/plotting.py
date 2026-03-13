@@ -265,17 +265,17 @@ def plot_single_fit(
         2,
         1,
         figsize=_page_single_column_figsize(PAGE_TALL_FIG_HEIGHT_IN),
-        sharex=False,
-        gridspec_kw={"height_ratios": [1.25, 1.0], "hspace": 0.22},
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.0, 1.0], "hspace": 0.05},
     )
     ax0, ax1 = axes
 
-    scan_fill_color = "#ffe0b2"
-    scan_edge_color = "#ef6c00"
-    selected_fill_color = "#a5d6a7"
-    selected_edge_color = "#2e7d32"
-    envelope_fill_color = "#ce93d8"
-    envelope_edge_color = "#6a1b9a"
+    scan_fill_color = "#ffd166"
+    scan_edge_color = "#c97b00"
+    selected_fill_color = "#80ed99"
+    selected_edge_color = "#1b7f3b"
+    envelope_fill_color = "#74c0fc"
+    envelope_edge_color = "#0b5ed7"
 
     ax0.plot(energy_ev, intensity, color="#1f4e79", lw=1.8, label="Experiment", zorder=5)
     ax0.plot(
@@ -289,6 +289,13 @@ def plot_single_fit(
     )
 
     style_axes(ax0, logy=True)
+    positive_intensity = intensity[np.isfinite(intensity) & (intensity > 0)]
+    if positive_intensity.size > 0:
+        y_top = 10.0 ** (float(np.ceil(np.log10(np.max(positive_intensity)))) + 1.0)
+        y_bottom = 10.0 ** float(np.floor(np.log10(np.min(positive_intensity))))
+        if np.isfinite(y_top) and np.isfinite(y_bottom) and (y_top > y_bottom):
+            ax0.set_ylim(y_bottom, y_top)
+    ax0.tick_params(axis="x", which="both", labelbottom=False)
     ax0.set_ylabel(r"PL intensity, $I_{\mathrm{PL}}$ (a.u.)")
     ax0.legend(loc="lower left", fontsize=LEGEND_FONT_SIZE, frameon=False)
     ax0.set_title(
@@ -332,15 +339,15 @@ def plot_single_fit(
             scan_domain_ev[0],
             scan_domain_ev[1],
             color=scan_fill_color,
-            alpha=0.16,
+            alpha=0.14,
             zorder=0,
             label="Full scan domain",
         )
         ax1.axvline(
-            scan_domain_ev[0], color=scan_edge_color, lw=1.0, ls=":", alpha=0.9, zorder=1
+            scan_domain_ev[0], color=scan_edge_color, lw=1.2, ls=":", alpha=0.95, zorder=1
         )
         ax1.axvline(
-            scan_domain_ev[1], color=scan_edge_color, lw=1.0, ls=":", alpha=0.9, zorder=1
+            scan_domain_ev[1], color=scan_edge_color, lw=1.2, ls=":", alpha=0.95, zorder=1
         )
     if fit_range_windows_ev:
         for lo_ev, hi_ev in fit_range_windows_ev:
@@ -361,27 +368,28 @@ def plot_single_fit(
             lo_env,
             hi_env,
             facecolor=envelope_fill_color,
-            alpha=0.10,
+            alpha=0.16,
             hatch="///",
             edgecolor=envelope_edge_color,
-            lw=0.8,
+            lw=1.0,
             zorder=1,
             label=f"{coverage_pct:.0f}% AICc-weight window envelope",
         )
-        ax1.axvline(lo_env, color=envelope_edge_color, lw=0.9, ls="--", alpha=0.8, zorder=2)
-        ax1.axvline(hi_env, color=envelope_edge_color, lw=0.9, ls="--", alpha=0.8, zorder=2)
+        ax1.axvline(lo_env, color=envelope_edge_color, lw=1.1, ls="--", alpha=0.9, zorder=2)
+        ax1.axvline(hi_env, color=envelope_edge_color, lw=1.1, ls="--", alpha=0.9, zorder=2)
     ax1.axvspan(
         fit_min_ev,
         fit_max_ev,
         facecolor=selected_fill_color,
-        alpha=0.20,
+        alpha=0.10,
+        hatch="xx",
         edgecolor=selected_edge_color,
-        lw=0.95,
-        zorder=2,
+        lw=1.25,
+        zorder=3,
         label="Selected fit window",
     )
-    ax1.axvline(fit_min_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=3)
-    ax1.axvline(fit_max_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=3)
+    ax1.axvline(fit_min_ev, color=selected_edge_color, lw=1.35, ls="-", alpha=0.98, zorder=4)
+    ax1.axvline(fit_max_ev, color=selected_edge_color, lw=1.35, ls="-", alpha=0.98, zorder=4)
     ax1.plot(energy_ev[intensity > 0], y_all, color="0.35", lw=1.0, label="Linearized data")
 
     x_fit_ev = energy_ev[fit_mask]
@@ -390,7 +398,7 @@ def plot_single_fit(
     ax1.plot(
         x_fit_ev,
         y_line,
-        color="#7b1fa2",
+        color="#d62828",
         lw=1.45,
         ls="--",
         label="Linear regression",
@@ -400,7 +408,7 @@ def plot_single_fit(
     ax1.set_ylabel(r"$\ln\!\left(\frac{h^3 c^2}{2E^2}I_{\mathrm{PL}}\right)$")
     ax1.legend(loc="lower left", fontsize=LEGEND_FONT_SIZE, frameon=False)
 
-    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.09, top=0.94, hspace=0.18)
+    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.09, top=0.94, hspace=0.04)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -571,7 +579,7 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         fontsize=SUPTITLE_FONT_SIZE,
         fontweight="bold",
     )
-    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.10, top=0.935, hspace=0.12, wspace=0.22)
+    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.10, top=0.935, hspace=0.07, wspace=0.22)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1002,7 +1010,7 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     fig.suptitle(
         r"Thermalized-power diagnostics in carrier-state space",
         y=0.986,
-        fontsize=SUPTITLE_FONT_SIZE,
+        fontsize=SUPTITLE_FONT_SIZE + 0.8,
         fontweight="bold",
     )
     fig.subplots_adjust(
@@ -1010,7 +1018,7 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         right=0.965,
         bottom=0.09,
         top=0.93,
-        hspace=0.16,
+        hspace=0.10,
         wspace=0.24,
     )
     save_figure(fig, outpath)
@@ -1262,7 +1270,7 @@ def plot_recombination_channel_contributions(
         fontsize=SUPTITLE_FONT_SIZE,
         fontweight="bold",
     )
-    fig.subplots_adjust(left=0.10, right=0.98, bottom=0.10, top=0.935, hspace=0.14, wspace=0.20)
+    fig.subplots_adjust(left=0.10, right=0.98, bottom=0.10, top=0.935, hspace=0.08, wspace=0.20)
     save_figure(fig, outpath)
     plt.close(fig)
 
