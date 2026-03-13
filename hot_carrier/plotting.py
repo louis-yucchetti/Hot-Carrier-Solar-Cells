@@ -281,16 +281,16 @@ def plot_single_fit(
     ax0.plot(
         energy_ev,
         intensity_model,
-        color="#d32f2f",
-        lw=1.45,
-        ls="--",
+        color="#c45a00",
+        lw=1.4,
+        ls="-",
         label="GPL model",
         zorder=6,
     )
 
     style_axes(ax0, logy=True)
     ax0.set_ylabel(r"PL intensity, $I_{\mathrm{PL}}$ (a.u.)")
-    ax0.legend(loc="lower left", fontsize=LEGEND_FONT_SIZE)
+    ax0.legend(loc="lower left", fontsize=LEGEND_FONT_SIZE, frameon=False)
     ax0.set_title(
         f"Spectrum {result.spectrum_id}  |  "
         f"$I_{{exc}}$={result.intensity_w_cm2:.3g} W cm$^{{-2}}$"
@@ -319,9 +319,9 @@ def plot_single_fit(
         clip_on=False,
         bbox={
             "facecolor": "white",
-            "edgecolor": "0.3",
+            "edgecolor": "none",
             "boxstyle": "square,pad=0.25",
-            "alpha": 0.95,
+            "alpha": 0.84,
         },
     )
     _raise_annotation(info_artist)
@@ -332,7 +332,7 @@ def plot_single_fit(
             scan_domain_ev[0],
             scan_domain_ev[1],
             color=scan_fill_color,
-            alpha=0.28,
+            alpha=0.16,
             zorder=0,
             label="Full scan domain",
         )
@@ -361,10 +361,10 @@ def plot_single_fit(
             lo_env,
             hi_env,
             facecolor=envelope_fill_color,
-            alpha=0.16,
+            alpha=0.10,
             hatch="///",
             edgecolor=envelope_edge_color,
-            lw=0.9,
+            lw=0.8,
             zorder=1,
             label=f"{coverage_pct:.0f}% AICc-weight window envelope",
         )
@@ -374,7 +374,7 @@ def plot_single_fit(
         fit_min_ev,
         fit_max_ev,
         facecolor=selected_fill_color,
-        alpha=0.36,
+        alpha=0.20,
         edgecolor=selected_edge_color,
         lw=0.95,
         zorder=2,
@@ -382,7 +382,7 @@ def plot_single_fit(
     )
     ax1.axvline(fit_min_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=3)
     ax1.axvline(fit_max_ev, color=selected_edge_color, lw=1.1, ls="-", alpha=0.95, zorder=3)
-    ax1.plot(energy_ev[intensity > 0], y_all, color="0.35", lw=1.05, label="Linearized data")
+    ax1.plot(energy_ev[intensity > 0], y_all, color="0.35", lw=1.0, label="Linearized data")
 
     x_fit_ev = energy_ev[fit_mask]
     x_fit_j = x_fit_ev * E_CHARGE
@@ -390,16 +390,15 @@ def plot_single_fit(
     ax1.plot(
         x_fit_ev,
         y_line,
-        color="#d32f2f",
-        lw=1.5,
-        ls="-",
+        color="#7b1fa2",
+        lw=1.45,
+        ls="--",
         label="Linear regression",
     )
     style_axes(ax1)
     ax1.set_xlabel(r"Photon energy, $E$ (eV)")
     ax1.set_ylabel(r"$\ln\!\left(\frac{h^3 c^2}{2E^2}I_{\mathrm{PL}}\right)$")
-    ax1.set_title("Linearized GPL tail", pad=4.0)
-    ax1.legend(loc="lower left", fontsize=LEGEND_FONT_SIZE)
+    ax1.legend(loc="lower left", fontsize=LEGEND_FONT_SIZE, frameon=False)
 
     fig.subplots_adjust(left=0.11, right=0.98, bottom=0.09, top=0.94, hspace=0.18)
     save_figure(fig, outpath)
@@ -468,7 +467,7 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     )
     style_axes(ax01, logx=True)
     ax01.set_ylabel(r"QFLS (eV)")
-    ax01.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax01.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
     _add_panel_label(ax01, "(b)")
 
     ax10.errorbar(
@@ -524,7 +523,7 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     style_axes(ax10, logx=True)
     ax10.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
     ax10.set_ylabel(r"Chemical potential (eV)")
-    ax10.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax10.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
     _add_panel_label(ax10, "(c)")
 
     n_vals = results_df["carrier_density_cm3"].to_numpy(dtype=float)
@@ -559,7 +558,7 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     style_axes(ax11, logx=True, logy=True)
     ax11.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
     ax11.set_ylabel(r"Carrier density, $n$ (cm$^{-3}$)")
-    ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
     _add_panel_label(ax11, "(d)")
 
     if np.isfinite(x_min_plot) and np.isfinite(x_max_plot) and (x_max_plot > x_min_plot):
@@ -568,10 +567,11 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
 
     fig.suptitle(
         "Extracted hot-carrier parameters versus excitation intensity",
-        y=0.992,
+        y=0.988,
         fontsize=SUPTITLE_FONT_SIZE,
+        fontweight="bold",
     )
-    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.10, top=0.93, hspace=0.22, wspace=0.22)
+    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.10, top=0.935, hspace=0.12, wspace=0.22)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -690,15 +690,49 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         vmax=float(np.max(temp_all) + (1e-9 if np.max(temp_all) == np.min(temp_all) else 0.0)),
     )
 
-    # This diagnostic carries a colorbar on every panel, so use a wider canvas
-    # than the default single-column grid to keep each axes close to square.
+    # Use shared x-axes within each column so only the bottom row carries x labels.
     fig, axes = plt.subplots(
         2,
         2,
-        figsize=(9.2, 6.8),
+        figsize=(8.8, 7.2),
+        sharex="col",
     )
     ax00, ax01 = axes[0]
     ax10, ax11 = axes[1]
+    for ax in axes.ravel():
+        ax.set_box_aspect(0.92)
+    temp_cmap = "viridis"
+    fd_label_context = "default" if default_model == "fd" else "comparison"
+    left_column_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            markerfacecolor="white",
+            markeredgecolor="0.35",
+            markersize=5.5,
+            label="MB-state estimate",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="^",
+            linestyle="none",
+            markerfacecolor="0.25",
+            markeredgecolor="black",
+            markersize=6.0,
+            label=f"FD-state estimate ({fd_label_context})",
+        ),
+    ]
+    density_points = np.concatenate([n_mb_cm3[valid_mb_state], n_fd_cm3[valid_fd_state]])
+    density_points = density_points[np.isfinite(density_points) & (density_points > 0)]
+    density_min_plot = np.nan
+    density_max_plot = np.nan
+    if density_points.size > 0:
+        density_pad_factor = 10 ** 0.05
+        density_min_plot = float(np.min(density_points) / density_pad_factor)
+        density_max_plot = float(np.max(density_points) * density_pad_factor)
 
     if np.count_nonzero(valid_mb_state) > 0:
         ax00.errorbar(
@@ -720,7 +754,7 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
             n_mb_cm3[valid_mb_state],
             p_th_w_cm3[valid_mb_state],
             c=temperature_k[valid_mb_state],
-            cmap="viridis",
+            cmap=temp_cmap,
             norm=temp_norm,
             s=42,
             marker="o",
@@ -749,7 +783,7 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
             n_fd_cm3[valid_fd_state],
             p_th_w_cm3[valid_fd_state],
             c=temperature_k[valid_fd_state],
-            cmap="viridis",
+            cmap=temp_cmap,
             norm=temp_norm,
             s=58,
             marker="^",
@@ -759,43 +793,18 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
             zorder=3,
         )
     style_axes(ax00, logx=True, logy=True)
-    ax00.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
+    ax00.tick_params(labelbottom=False)
     ax00.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
-    ax00.set_title(
-        "Volumetric thermalized power:\nMB vs FD carrier-state map",
-        fontsize=MULTIPANEL_TITLE_FONT_SIZE,
-        pad=4.0,
-    )
     ax00.legend(
-        handles=[
-            Line2D(
-                [0],
-                [0],
-                marker="o",
-                linestyle="none",
-                markerfacecolor="white",
-                markeredgecolor="0.35",
-                markersize=5.5,
-                label="MB density",
-            ),
-            Line2D(
-                [0],
-                [0],
-                marker="^",
-                linestyle="none",
-                markerfacecolor="0.25",
-                markeredgecolor="black",
-                markersize=6.0,
-                label=f"FD density ({'default' if default_model == 'fd' else 'comparison'})",
-            ),
-        ],
-        loc="best",
+        handles=left_column_handles,
+        loc="lower right",
         fontsize=LEGEND_FONT_SIZE,
+        frameon=False,
     )
     cbar00 = fig.colorbar(
-        cm.ScalarMappable(norm=temp_norm, cmap="viridis"),
+        cm.ScalarMappable(norm=temp_norm, cmap=temp_cmap),
         ax=ax00,
-        pad=0.018,
+        pad=0.016,
         fraction=0.045,
     )
     _style_colorbar(cbar00, r"$T$ (K)")
@@ -829,16 +838,9 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         zorder=2,
     )
     style_axes(ax01, logy=True)
-    ax01.set_xlabel("Carrier temperature, $T$ (K)")
+    ax01.tick_params(labelbottom=False)
     ax01.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
-    ax01.set_title(
-        rf"Thermalized power versus carrier temperature"
-        "\n"
-        rf"(color = $n_{{\mathrm{{{default_model.upper()}}}}}$)",
-        fontsize=MULTIPANEL_TITLE_FONT_SIZE,
-        pad=4.0,
-    )
-    cbar01 = fig.colorbar(s01, ax=ax01, pad=0.018, fraction=0.045)
+    cbar01 = fig.colorbar(s01, ax=ax01, pad=0.016, fraction=0.042)
     _style_colorbar(cbar01, r"$n$ (cm$^{-3}$)")
     _add_panel_label(ax01, "(b)")
 
@@ -862,7 +864,7 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
             n_mb_cm3[valid_mb_per_carrier],
             p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
             c=temperature_k[valid_mb_per_carrier],
-            cmap="plasma",
+            cmap=temp_cmap,
             norm=temp_norm,
             s=42,
             marker="o",
@@ -891,7 +893,7 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
             n_fd_cm3[valid_fd_per_carrier],
             p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
             c=temperature_k[valid_fd_per_carrier],
-            cmap="plasma",
+            cmap=temp_cmap,
             norm=temp_norm,
             s=58,
             marker="^",
@@ -903,44 +905,15 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     style_axes(ax10, logx=True, logy=True)
     ax10.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
     ax10.set_ylabel(r"$P_{\mathrm{th}}/n$ (eV s$^{-1}$ carrier$^{-1}$)")
-    ax10.set_title(
-        "Per-carrier cooling rate:\nMB vs FD",
-        fontsize=MULTIPANEL_TITLE_FONT_SIZE,
-        pad=4.0,
-    )
-    ax10.legend(
-        handles=[
-            Line2D(
-                [0],
-                [0],
-                marker="o",
-                linestyle="none",
-                markerfacecolor="white",
-                markeredgecolor="0.35",
-                markersize=5.5,
-                label="MB per carrier",
-            ),
-            Line2D(
-                [0],
-                [0],
-                marker="^",
-                linestyle="none",
-                markerfacecolor="0.25",
-                markeredgecolor="black",
-                markersize=6.0,
-                label=f"FD per carrier ({'default' if default_model == 'fd' else 'comparison'})",
-            ),
-        ],
-        loc="best",
-        fontsize=LEGEND_FONT_SIZE,
-    )
     cbar10 = fig.colorbar(
-        cm.ScalarMappable(norm=temp_norm, cmap="plasma"),
+        cm.ScalarMappable(norm=temp_norm, cmap=temp_cmap),
         ax=ax10,
-        pad=0.018,
+        pad=0.016,
         fraction=0.045,
     )
     _style_colorbar(cbar10, r"$T$ (K)")
+    if np.isfinite(density_min_plot) and np.isfinite(density_max_plot) and (density_max_plot > density_min_plot):
+        ax00.set_xlim(density_min_plot, density_max_plot)
     _add_panel_label(ax10, "(c)")
 
     intensity_norm = LogNorm(
@@ -1015,28 +988,30 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     style_axes(ax11)
     ax11.set_xlabel("Carrier temperature, $T$ (K)")
     ax11.set_ylabel(r"Thermalized energy per pair (eV)")
-    ax11.set_title(
-        "Excess energy dissipated per\nabsorbed carrier pair",
-        fontsize=MULTIPANEL_TITLE_FONT_SIZE,
-        pad=4.0,
-    )
-    ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
-    cbar11 = fig.colorbar(s11, ax=ax11, pad=0.018, fraction=0.045)
+    ax11.legend(loc="upper right", fontsize=LEGEND_FONT_SIZE, frameon=False)
+    cbar11 = fig.colorbar(s11, ax=ax11, pad=0.016, fraction=0.042)
     _style_colorbar(cbar11, r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
     _add_panel_label(ax11, "(d)")
+    temperature_points = np.concatenate([temperature_k[valid_default], temperature_k[valid_thermal]])
+    temperature_points = temperature_points[np.isfinite(temperature_points)]
+    if temperature_points.size > 0:
+        temp_span = float(np.max(temperature_points) - np.min(temperature_points))
+        temp_pad = 3.0 if temp_span <= 0 else max(2.5, 0.06 * temp_span)
+        ax01.set_xlim(float(np.min(temperature_points) - temp_pad), float(np.max(temperature_points) + temp_pad))
 
     fig.suptitle(
         r"Thermalized-power diagnostics in carrier-state space",
-        y=0.985,
+        y=0.986,
         fontsize=SUPTITLE_FONT_SIZE,
+        fontweight="bold",
     )
     fig.subplots_adjust(
         left=0.08,
         right=0.965,
-        bottom=0.085,
-        top=0.89,
-        hspace=0.30,
-        wspace=0.32,
+        bottom=0.09,
+        top=0.93,
+        hspace=0.16,
+        wspace=0.24,
     )
     save_figure(fig, outpath)
     plt.close(fig)
@@ -1155,8 +1130,7 @@ def plot_recombination_channel_contributions(
     )
     style_axes(ax00, logx=True, logy=True)
     ax00.set_ylabel(r"Power density (W cm$^{-3}$)")
-    ax00.set_title(r"Absolute recombination-channel power density")
-    ax00.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax00.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
     _add_panel_label(ax00, "(a)")
 
     ax01.plot(
@@ -1201,8 +1175,7 @@ def plot_recombination_channel_contributions(
         style_axes(ax01, logx=True)
         ax01.set_ylim(0.0, 1.0)
     ax01.set_ylabel("Fraction of absorbed power (%)")
-    ax01.set_title(r"PLQY-driven partition of absorbed power")
-    ax01.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax01.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
     _add_panel_label(ax01, "(b)")
 
     ax10.plot(
@@ -1232,8 +1205,7 @@ def plot_recombination_channel_contributions(
     style_axes(ax10, logx=True, logy=True)
     ax10.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
     ax10.set_ylabel(r"Power density (W cm$^{-3}$)")
-    ax10.set_title(r"Thermalized power gained by allowing $P_{\mathrm{rad}}$")
-    ax10.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax10.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
     _add_panel_label(ax10, "(c)")
 
     ax11.plot(
@@ -1277,8 +1249,7 @@ def plot_recombination_channel_contributions(
     )
     ax11.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
     ax11.set_ylabel("Relative change (%)")
-    ax11.set_title(r"How strongly nonzero $\eta$ changes the power balance")
-    ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax11.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
     _add_panel_label(ax11, "(d)")
 
     if x_max_plot > x_min_plot:
@@ -1287,10 +1258,11 @@ def plot_recombination_channel_contributions(
 
     fig.suptitle(
         r"Radiative versus nonradiative recombination contributions",
-        y=0.992,
+        y=0.988,
         fontsize=SUPTITLE_FONT_SIZE,
+        fontweight="bold",
     )
-    fig.subplots_adjust(left=0.10, right=0.98, bottom=0.10, top=0.93, hspace=0.26, wspace=0.24)
+    fig.subplots_adjust(left=0.10, right=0.98, bottom=0.10, top=0.935, hspace=0.14, wspace=0.20)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1329,7 +1301,7 @@ def plot_mb_validity_limit(
         1,
         figsize=_page_single_column_figsize(PAGE_MEDIUM_FIG_HEIGHT_IN),
         sharex=True,
-        gridspec_kw={"height_ratios": [2.8, 1.6], "hspace": 0.08},
+        gridspec_kw={"height_ratios": [2.8, 1.6], "hspace": 0.06},
     )
     colors = cm.viridis(np.linspace(0.15, 0.90, temperatures_k.size))
 
@@ -1425,11 +1397,11 @@ def plot_mb_validity_limit(
                 conservative_x,
                 x_right,
                 facecolor="#ffebee",
-                alpha=0.45,
+                alpha=0.24,
                 zorder=0,
             )
-            ax.axvline(conservative_x, color="#b71c1c", lw=1.0, ls=":", alpha=0.9)
-        ax0.text(
+            ax.axvline(conservative_x, color="#b71c1c", lw=1.0, ls=":", alpha=0.78)
+        non_mb_text_artist = ax0.text(
             0.03,
             0.05,
             rf"Non-MB side starts near $x^* \approx {conservative_x:.2f}$",
@@ -1439,22 +1411,19 @@ def plot_mb_validity_limit(
             fontsize=ANNOTATION_FONT_SIZE,
             bbox={
                 "facecolor": "white",
-                "edgecolor": "0.35",
+                "edgecolor": "none",
                 "boxstyle": "square,pad=0.2",
-                "alpha": 0.92,
+                "alpha": 0.84,
             },
         )
+        _raise_annotation(non_mb_text_artist)
 
     style_axes(ax0)
     ax0.set_ylabel(r"$\ln\!\left(\int_{E_g}^{\infty} I_{\mathrm{PC}}(E)\,\mathrm{d}E\right)$")
-    ax0.set_title(
-        "Maxwell-Boltzmann validity limit from integrated generalized Planck law",
-        pad=6.0,
-    )
     top_handles, top_labels = ax0.get_legend_handles_labels()
     top_handles.append(Line2D([0], [0], color="0.25", lw=1.2, ls="--"))
     top_labels.append("MB affine reference")
-    ax0.legend(top_handles, top_labels, loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax0.legend(top_handles, top_labels, loc="upper left", fontsize=LEGEND_FONT_SIZE, frameon=False)
 
     ax1.axhline(
         rel_error_limit,
@@ -1466,8 +1435,7 @@ def plot_mb_validity_limit(
     style_axes(ax1, logy=True)
     ax1.set_xlabel(r"Reduced QFLS, $(\Delta\mu - E_g)/(k_B T)$")
     ax1.set_ylabel(r"$\Phi_{\mathrm{BE}}/\Phi_{\mathrm{MB}} - 1$")
-    ax1.set_title(r"Deviation from MB", pad=3.0)
-    ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax1.legend(loc="upper left", fontsize=LEGEND_FONT_SIZE, frameon=False)
     ax1.set_xlim(x_left, x_right)
 
     if limits_df is not None and (not limits_df.empty):
@@ -1476,7 +1444,7 @@ def plot_mb_validity_limit(
             if hasattr(row, "x_limit") and np.isfinite(row.x_limit):
                 lines.append(f"T={row.temperature_k:.0f} K: x*={row.x_limit:.2f}")
         if lines:
-            ax1.text(
+            limit_text_artist = ax1.text(
                 0.03,
                 0.04,
                 "\n".join(lines),
@@ -1486,13 +1454,20 @@ def plot_mb_validity_limit(
                 fontsize=ANNOTATION_FONT_SIZE,
                 bbox={
                     "facecolor": "white",
-                    "edgecolor": "0.35",
+                    "edgecolor": "none",
                     "boxstyle": "square,pad=0.2",
-                    "alpha": 0.92,
+                    "alpha": 0.84,
                 },
             )
+            _raise_annotation(limit_text_artist)
 
-    fig.subplots_adjust(left=0.12, right=0.98, bottom=0.11, top=0.92, hspace=0.14)
+    fig.suptitle(
+        "Maxwell-Boltzmann validity limit from integrated generalized Planck law",
+        y=0.986,
+        fontsize=SUPTITLE_FONT_SIZE,
+        fontweight="bold",
+    )
+    fig.subplots_adjust(left=0.12, right=0.98, bottom=0.11, top=0.94, hspace=0.08)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1701,8 +1676,8 @@ def plot_tsai_temperature_rise_vs_pth_density(
             gridspec_kw={"height_ratios": [3.0, 1.5], "hspace": 0.12},
         )
         for x, y_exp, y_fd, y_mb in zip(pth, dT_exp, dT_fd, dT_mb, strict=True):
-            ax0.plot([x, x], [y_exp, y_fd], color="#37474f", lw=0.9, alpha=0.25, zorder=1)
-            ax0.plot([x, x], [y_exp, y_mb], color="#8e24aa", lw=0.8, alpha=0.18, zorder=1)
+            ax0.plot([x, x], [y_exp, y_fd], color="#37474f", lw=0.75, alpha=0.18, zorder=1)
+            ax0.plot([x, x], [y_exp, y_mb], color="#8e24aa", lw=0.7, alpha=0.12, zorder=1)
 
         ax0.scatter(
             pth,
@@ -1710,10 +1685,10 @@ def plot_tsai_temperature_rise_vs_pth_density(
             c=n_exp,
             cmap=cmap,
             norm=n_norm,
-            s=58,
+            s=54,
             marker="o",
             edgecolors="white",
-            linewidths=0.6,
+            linewidths=0.55,
             label="Experimental",
             zorder=3,
         )
@@ -1723,10 +1698,10 @@ def plot_tsai_temperature_rise_vs_pth_density(
             c=n_fd,
             cmap=cmap,
             norm=n_norm,
-            s=64,
+            s=60,
             marker="^",
             edgecolors="black",
-            linewidths=0.5,
+            linewidths=0.45,
             label=f"Tsai simulated (FD{' default' if default_model == 'fd' else ''})",
             zorder=4,
         )
@@ -1736,11 +1711,11 @@ def plot_tsai_temperature_rise_vs_pth_density(
             c=n_mb,
             cmap=cmap,
             norm=n_norm,
-            s=52,
+            s=48,
             marker="s",
             edgecolors="white",
-            linewidths=0.5,
-            alpha=0.70,
+            linewidths=0.45,
+            alpha=0.64,
             label=f"Tsai simulated (MB{' default' if default_model == 'mb' else ''})",
             zorder=3,
         )
@@ -1762,19 +1737,15 @@ def plot_tsai_temperature_rise_vs_pth_density(
                 fit_pth,
                 fit_dt,
                 color=color,
-                lw=1.35,
+                lw=1.2,
                 ls=linestyle,
-                alpha=0.95,
+                alpha=0.92,
                 label=label,
                 zorder=2,
             )
 
         style_axes(ax0, logx=True)
         ax0.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
-        ax0.set_title(
-            r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ with MB/FD Tsai closures",
-            pad=6.0,
-        )
         q_summary_lines = [
             line
             for line in (
@@ -1796,13 +1767,13 @@ def plot_tsai_temperature_rise_vs_pth_density(
                 fontsize=ANNOTATION_FONT_SIZE,
                 bbox={
                     "facecolor": "white",
-                    "edgecolor": "0.35",
+                    "edgecolor": "none",
                     "boxstyle": "square,pad=0.2",
-                    "alpha": 0.92,
+                    "alpha": 0.84,
                 },
             )
             _raise_annotation(q_text_artist)
-        ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE, ncol=2)
+        ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE, ncol=2, frameon=False)
 
         delta_t_fd = dT_fd - dT_exp
         delta_t_mb = dT_mb - dT_exp
@@ -1813,7 +1784,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
             c=n_fd,
             cmap=cmap,
             norm=n_norm,
-            s=52,
+            s=48,
             marker="^",
             edgecolors="black",
             linewidths=0.45,
@@ -1826,19 +1797,18 @@ def plot_tsai_temperature_rise_vs_pth_density(
             c=n_mb,
             cmap=cmap,
             norm=n_norm,
-            s=44,
+            s=40,
             marker="s",
             edgecolors="white",
             linewidths=0.45,
-            alpha=0.72,
+            alpha=0.66,
             zorder=3,
             label="MB residual",
         )
         style_axes(ax1, logx=True)
         ax1.set_xlabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
         ax1.set_ylabel(r"$\Delta T_{\mathrm{sim-exp}}$ (K)")
-        ax1.set_title(r"Residual diagnostic", pad=3.0)
-        ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+        ax1.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
 
         sm = cm.ScalarMappable(norm=n_norm, cmap=cmap)
         cbar = fig.colorbar(sm, ax=[ax0, ax1], pad=0.02, fraction=0.04)
@@ -1848,7 +1818,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
         bias_fd = float(np.nanmean(delta_t_fd))
         mae_mb = float(np.nanmean(np.abs(delta_t_mb)))
         bias_mb = float(np.nanmean(delta_t_mb))
-        ax1.text(
+        residual_text_artist = ax1.text(
             0.03,
             0.96,
             f"FD: MAE={mae_fd:.2f} K, Bias={bias_fd:.2f} K\n"
@@ -1859,13 +1829,20 @@ def plot_tsai_temperature_rise_vs_pth_density(
             fontsize=ANNOTATION_FONT_SIZE,
             bbox={
                 "facecolor": "white",
-                "edgecolor": "0.35",
+                "edgecolor": "none",
                 "boxstyle": "square,pad=0.2",
-                "alpha": 0.92,
+                "alpha": 0.84,
             },
         )
+        _raise_annotation(residual_text_artist)
 
-        fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.93, hspace=0.14)
+        fig.suptitle(
+            r"$T-T_L$ vs $P_{\mathrm{th}}$ with MB/FD Tsai closures",
+            y=0.986,
+            fontsize=SUPTITLE_FONT_SIZE,
+            fontweight="bold",
+        )
+        fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.94, hspace=0.12)
         save_figure(fig, outpath)
         plt.close(fig)
         return
@@ -1920,7 +1897,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
         gridspec_kw={"height_ratios": [3.0, 1.5], "hspace": 0.12},
     )
     for x, y0, y1 in zip(pth, dT_exp, dT_sim, strict=True):
-        ax0.plot([x, x], [y0, y1], color="0.65", lw=0.8, alpha=0.35, zorder=1)
+        ax0.plot([x, x], [y0, y1], color="0.65", lw=0.75, alpha=0.24, zorder=1)
 
     ax0.scatter(
         pth,
@@ -1928,10 +1905,10 @@ def plot_tsai_temperature_rise_vs_pth_density(
         c=n_exp,
         cmap=cmap,
         norm=n_norm,
-        s=58,
+        s=54,
         marker="o",
         edgecolors="white",
-        linewidths=0.6,
+        linewidths=0.55,
         label="Experimental",
         zorder=3,
     )
@@ -1941,10 +1918,10 @@ def plot_tsai_temperature_rise_vs_pth_density(
         c=n_sim,
         cmap=cmap,
         norm=n_norm,
-        s=62,
+        s=58,
         marker="^",
         edgecolors="black",
-        linewidths=0.5,
+        linewidths=0.45,
         label="Tsai-simulated",
         zorder=4,
     )
@@ -1965,20 +1942,16 @@ def plot_tsai_temperature_rise_vs_pth_density(
             fit_pth,
             fit_dt,
             color=color,
-            lw=1.35,
+            lw=1.2,
             ls=linestyle,
-            alpha=0.95,
+            alpha=0.92,
             label=label,
             zorder=2,
         )
 
     style_axes(ax0, logx=True)
     ax0.set_ylabel(r"Carrier temperature rise, $T - T_L$ (K)")
-    ax0.set_title(
-        r"Figure of merit: $T-T_L$ vs $P_{\mathrm{th}}$ colored by carrier density",
-        pad=6.0,
-    )
-    ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
+    ax0.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
     q_summary_lines = [
         line
         for line in (
@@ -1999,9 +1972,9 @@ def plot_tsai_temperature_rise_vs_pth_density(
             fontsize=ANNOTATION_FONT_SIZE,
             bbox={
                 "facecolor": "white",
-                "edgecolor": "0.35",
+                "edgecolor": "none",
                 "boxstyle": "square,pad=0.2",
-                "alpha": 0.92,
+                "alpha": 0.84,
             },
         )
         _raise_annotation(q_text_artist)
@@ -2014,16 +1987,15 @@ def plot_tsai_temperature_rise_vs_pth_density(
         c=n_exp,
         cmap=cmap,
         norm=n_norm,
-        s=48,
+        s=44,
         marker="o",
         edgecolors="white",
-        linewidths=0.5,
+        linewidths=0.45,
         zorder=3,
     )
     style_axes(ax1, logx=True)
     ax1.set_xlabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
     ax1.set_ylabel(r"$\Delta T_{\mathrm{sim-exp}}$ (K)")
-    ax1.set_title(r"Residual diagnostic", pad=3.0)
 
     sm = cm.ScalarMappable(norm=n_norm, cmap=cmap)
     cbar = fig.colorbar(sm, ax=[ax0, ax1], pad=0.02, fraction=0.04)
@@ -2031,7 +2003,7 @@ def plot_tsai_temperature_rise_vs_pth_density(
 
     mae_rise = float(np.nanmean(np.abs(delta_t)))
     bias_rise = float(np.nanmean(delta_t))
-    ax1.text(
+    residual_text_artist = ax1.text(
         0.03,
         0.96,
         f"MAE(ΔT) = {mae_rise:.2f} K\nBias(ΔT) = {bias_rise:.2f} K",
@@ -2041,12 +2013,19 @@ def plot_tsai_temperature_rise_vs_pth_density(
         fontsize=ANNOTATION_FONT_SIZE,
         bbox={
             "facecolor": "white",
-            "edgecolor": "0.35",
+            "edgecolor": "none",
             "boxstyle": "square,pad=0.2",
-            "alpha": 0.92,
+            "alpha": 0.84,
         },
     )
+    _raise_annotation(residual_text_artist)
 
-    fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.93, hspace=0.14)
+    fig.suptitle(
+        r"$T-T_L$ vs $P_{\mathrm{th}}$ colored by carrier density",
+        y=0.986,
+        fontsize=SUPTITLE_FONT_SIZE,
+        fontweight="bold",
+    )
+    fig.subplots_adjust(left=0.11, right=0.89, bottom=0.10, top=0.94, hspace=0.12)
     save_figure(fig, outpath)
     plt.close(fig)
