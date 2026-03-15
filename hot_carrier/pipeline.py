@@ -330,6 +330,7 @@ def _print_run_summary(
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
     print(f"Power figure:     {out_dir / 'thermalized_power_diagnostics.png'}")
     print(f"PLQY figure:      {out_dir / 'recombination_channel_contributions.png'}")
+    print(f"Presentation PNGs:{out_dir / 'presentation_plots'}")
     if mb_validity_curves_df is not None and mb_validity_limits_df is not None:
         print(f"MB limit figure:  {out_dir / 'mb_validity_limit.png'}")
         print(f"MB curves CSV:    {out_dir / 'mb_validity_scan.csv'}")

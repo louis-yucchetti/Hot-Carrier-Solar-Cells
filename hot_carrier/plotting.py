@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -50,6 +50,7 @@ LEGEND_FONT_SIZE = 8.0
 ANNOTATION_FONT_SIZE = 8.0
 PANEL_LABEL_FONT_SIZE = 8.8
 SUPTITLE_FONT_SIZE = 10.2
+PRESENTATION_PLOT_DIRNAME = "presentation_plots"
 
 
 def _page_single_column_figsize(height_in: float) -> tuple[float, float]:
@@ -139,6 +140,30 @@ def style_axes(ax: plt.Axes, logx: bool = False, logy: bool = False) -> None:
 def save_figure(fig: plt.Figure, outpath: Path) -> None:
     png_outpath = outpath.with_suffix(".png")
     fig.savefig(png_outpath, dpi=SAVE_DPI, bbox_inches="tight")
+
+
+def _presentation_plot_dir(outpath: Path) -> Path:
+    panel_dir = outpath.parent / PRESENTATION_PLOT_DIRNAME / outpath.stem
+    panel_dir.mkdir(parents=True, exist_ok=True)
+    return panel_dir
+
+
+def _export_single_panel_figure(
+    panel_dir: Path,
+    filename: str,
+    panel_plotter: Callable[[plt.Figure, plt.Axes], None],
+    *,
+    title: str | None = None,
+    figsize: tuple[float, float] | None = None,
+    subplots_adjust: dict[str, float] | None = None,
+) -> None:
+    fig, ax = plt.subplots(figsize=figsize or _page_single_column_figsize(PAGE_MEDIUM_FIG_HEIGHT_IN))
+    panel_plotter(fig, ax)
+    if title:
+        ax.set_title(title, pad=8.0)
+    fig.subplots_adjust(**(subplots_adjust or {"left": 0.12, "right": 0.93, "bottom": 0.12, "top": 0.90}))
+    save_figure(fig, panel_dir / filename)
+    plt.close(fig)
 
 
 def _compute_tsai_q_factor_fit(
@@ -414,7 +439,7 @@ def plot_single_fit(
 
 
 def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
-    x = results_df["intensity_w_cm2"].to_numpy()
+    x = results_df["intensity_w_cm2"].to_numpy(dtype=float)
     x_valid = x[np.isfinite(x) & (x > 0)]
     if x_valid.size > 0:
         # Keep a small visual padding while using the full log-x width of the data range.
@@ -425,6 +450,197 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         x_min_plot = np.nan
         x_max_plot = np.nan
 
+    n_vals = results_df["carrier_density_cm3"].to_numpy(dtype=float)
+    n_err = results_df["carrier_density_err_total_cm3"].to_numpy(dtype=float)
+    n_fd_vals = results_df["carrier_density_fd_cm3"].to_numpy(dtype=float)
+    n_fd_err = results_df["carrier_density_fd_err_total_cm3"].to_numpy(dtype=float)
+
+    def _set_common_intensity_xlim(ax: plt.Axes) -> None:
+        if np.isfinite(x_min_plot) and np.isfinite(x_max_plot) and (x_max_plot > x_min_plot):
+            ax.set_xlim(x_min_plot, x_max_plot)
+
+    def _plot_temperature_panel(
+        _fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.errorbar(
+            x,
+            results_df["temperature_k"],
+            yerr=results_df["temperature_err_total_k"],
+            fmt="o-",
+            lw=1.5,
+            ms=4.5,
+            capsize=2.5,
+            elinewidth=1.0,
+            color="#1565c0",
+        )
+        style_axes(ax, logx=True)
+        ax.set_ylabel(r"Temperature, $T$ (K)")
+        if show_xlabel:
+            ax.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        _set_common_intensity_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(a)")
+
+    def _plot_qfls_panel(
+        _fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.errorbar(
+            x,
+            results_df["qfls_ev"],
+            yerr=results_df["qfls_err_total_ev"],
+            fmt="o-",
+            lw=1.5,
+            ms=4.5,
+            capsize=2.5,
+            elinewidth=1.0,
+            color="#6a1b9a",
+            label=r"$\Delta\mu$",
+        )
+        ax.errorbar(
+            x,
+            results_df["qfls_effective_ev"],
+            yerr=results_df["qfls_effective_err_total_ev"],
+            fmt="s--",
+            lw=1.1,
+            ms=3.5,
+            capsize=2.0,
+            elinewidth=0.9,
+            color="#9c27b0",
+            alpha=0.82,
+            label=r"$\Delta\mu_{\mathrm{eff}}$",
+        )
+        style_axes(ax, logx=True)
+        ax.set_ylabel(r"QFLS (eV)")
+        if show_xlabel:
+            ax.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
+        _set_common_intensity_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(b)")
+
+    def _plot_chemical_potential_panel(
+        _fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.errorbar(
+            x,
+            results_df["mu_e_ev"],
+            yerr=results_df["mu_e_err_total_ev"],
+            fmt="o-",
+            lw=1.5,
+            ms=4.3,
+            capsize=2.5,
+            elinewidth=1.0,
+            color="#ef6c00",
+            label=r"$\mu_e$ (MB)",
+        )
+        ax.errorbar(
+            x,
+            results_df["mu_h_ev"],
+            yerr=results_df["mu_h_err_total_ev"],
+            fmt="o-",
+            lw=1.5,
+            ms=4.3,
+            capsize=2.5,
+            elinewidth=1.0,
+            color="#2e7d32",
+            label=r"$\mu_h$ (MB)",
+        )
+        ax.errorbar(
+            x,
+            results_df["mu_e_fd_ev"],
+            yerr=results_df["mu_e_fd_err_total_ev"],
+            fmt="s--",
+            lw=1.2,
+            ms=3.9,
+            capsize=2.0,
+            elinewidth=0.9,
+            color="#bf360c",
+            alpha=0.9,
+            label=r"$\mu_e$ (FD)",
+        )
+        ax.errorbar(
+            x,
+            results_df["mu_h_fd_ev"],
+            yerr=results_df["mu_h_fd_err_total_ev"],
+            fmt="s--",
+            lw=1.2,
+            ms=3.9,
+            capsize=2.0,
+            elinewidth=0.9,
+            color="#1b5e20",
+            alpha=0.9,
+            label=r"$\mu_h$ (FD)",
+        )
+        style_axes(ax, logx=True)
+        ax.set_ylabel(r"Chemical potential (eV)")
+        if show_xlabel:
+            ax.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
+        _set_common_intensity_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(c)")
+
+    def _plot_carrier_density_panel(
+        _fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.errorbar(
+            x,
+            n_vals,
+            yerr=_safe_log_yerr(y=n_vals, err=n_err),
+            fmt="o-",
+            lw=1.5,
+            ms=4.5,
+            capsize=2.5,
+            elinewidth=1.0,
+            color="#00838f",
+            label=r"$n$ (MB)",
+        )
+        ax.errorbar(
+            x,
+            n_fd_vals,
+            yerr=_safe_log_yerr(y=n_fd_vals, err=n_fd_err),
+            fmt="s--",
+            lw=1.2,
+            ms=4.0,
+            capsize=2.0,
+            elinewidth=0.9,
+            color="#004d40",
+            alpha=0.9,
+            label=r"$n$ (FD)",
+        )
+        style_axes(ax, logx=True, logy=True)
+        ax.set_ylabel(r"Carrier density, $n$ (cm$^{-3}$)")
+        if show_xlabel:
+            ax.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
+        _set_common_intensity_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(d)")
+
     fig, axes = plt.subplots(
         2,
         2,
@@ -432,146 +648,10 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         sharex=True,
     )
     ax00, ax01, ax10, ax11 = axes.ravel()
-
-    ax00.errorbar(
-        x,
-        results_df["temperature_k"],
-        yerr=results_df["temperature_err_total_k"],
-        fmt="o-",
-        lw=1.5,
-        ms=4.5,
-        capsize=2.5,
-        elinewidth=1.0,
-        color="#1565c0",
-    )
-    style_axes(ax00, logx=True)
-    ax00.set_ylabel(r"Temperature, $T$ (K)")
-    _add_panel_label(ax00, "(a)")
-
-    ax01.errorbar(
-        x,
-        results_df["qfls_ev"],
-        yerr=results_df["qfls_err_total_ev"],
-        fmt="o-",
-        lw=1.5,
-        ms=4.5,
-        capsize=2.5,
-        elinewidth=1.0,
-        color="#6a1b9a",
-        label=r"$\Delta\mu$",
-    )
-    ax01.errorbar(
-        x,
-        results_df["qfls_effective_ev"],
-        yerr=results_df["qfls_effective_err_total_ev"],
-        fmt="s--",
-        lw=1.1,
-        ms=3.5,
-        capsize=2.0,
-        elinewidth=0.9,
-        color="#9c27b0",
-        alpha=0.82,
-        label=r"$\Delta\mu_{\mathrm{eff}}$",
-    )
-    style_axes(ax01, logx=True)
-    ax01.set_ylabel(r"QFLS (eV)")
-    ax01.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
-    _add_panel_label(ax01, "(b)")
-
-    ax10.errorbar(
-        x,
-        results_df["mu_e_ev"],
-        yerr=results_df["mu_e_err_total_ev"],
-        fmt="o-",
-        lw=1.5,
-        ms=4.3,
-        capsize=2.5,
-        elinewidth=1.0,
-        color="#ef6c00",
-        label=r"$\mu_e$ (MB)",
-    )
-    ax10.errorbar(
-        x,
-        results_df["mu_h_ev"],
-        yerr=results_df["mu_h_err_total_ev"],
-        fmt="o-",
-        lw=1.5,
-        ms=4.3,
-        capsize=2.5,
-        elinewidth=1.0,
-        color="#2e7d32",
-        label=r"$\mu_h$ (MB)",
-    )
-    ax10.errorbar(
-        x,
-        results_df["mu_e_fd_ev"],
-        yerr=results_df["mu_e_fd_err_total_ev"],
-        fmt="s--",
-        lw=1.2,
-        ms=3.9,
-        capsize=2.0,
-        elinewidth=0.9,
-        color="#bf360c",
-        alpha=0.9,
-        label=r"$\mu_e$ (FD)",
-    )
-    ax10.errorbar(
-        x,
-        results_df["mu_h_fd_ev"],
-        yerr=results_df["mu_h_fd_err_total_ev"],
-        fmt="s--",
-        lw=1.2,
-        ms=3.9,
-        capsize=2.0,
-        elinewidth=0.9,
-        color="#1b5e20",
-        alpha=0.9,
-        label=r"$\mu_h$ (FD)",
-    )
-    style_axes(ax10, logx=True)
-    ax10.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
-    ax10.set_ylabel(r"Chemical potential (eV)")
-    ax10.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
-    _add_panel_label(ax10, "(c)")
-
-    n_vals = results_df["carrier_density_cm3"].to_numpy(dtype=float)
-    n_err = results_df["carrier_density_err_total_cm3"].to_numpy(dtype=float)
-    ax11.errorbar(
-        x,
-        n_vals,
-        yerr=_safe_log_yerr(y=n_vals, err=n_err),
-        fmt="o-",
-        lw=1.5,
-        ms=4.5,
-        capsize=2.5,
-        elinewidth=1.0,
-        color="#00838f",
-        label=r"$n$ (MB)",
-    )
-    n_fd_vals = results_df["carrier_density_fd_cm3"].to_numpy(dtype=float)
-    n_fd_err = results_df["carrier_density_fd_err_total_cm3"].to_numpy(dtype=float)
-    ax11.errorbar(
-        x,
-        n_fd_vals,
-        yerr=_safe_log_yerr(y=n_fd_vals, err=n_fd_err),
-        fmt="s--",
-        lw=1.2,
-        ms=4.0,
-        capsize=2.0,
-        elinewidth=0.9,
-        color="#004d40",
-        alpha=0.9,
-        label=r"$n$ (FD)",
-    )
-    style_axes(ax11, logx=True, logy=True)
-    ax11.set_xlabel(r"Excitation intensity, $I_{exc}$ (W cm$^{-2}$)")
-    ax11.set_ylabel(r"Carrier density, $n$ (cm$^{-3}$)")
-    ax11.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
-    _add_panel_label(ax11, "(d)")
-
-    if np.isfinite(x_min_plot) and np.isfinite(x_max_plot) and (x_max_plot > x_min_plot):
-        for ax in (ax00, ax01, ax10, ax11):
-            ax.set_xlim(x_min_plot, x_max_plot)
+    _plot_temperature_panel(fig, ax00, show_xlabel=False, show_panel_label=True)
+    _plot_qfls_panel(fig, ax01, show_xlabel=False, show_panel_label=True)
+    _plot_chemical_potential_panel(fig, ax10, show_xlabel=True, show_panel_label=True)
+    _plot_carrier_density_panel(fig, ax11, show_xlabel=True, show_panel_label=True)
 
     fig.suptitle(
         "Extracted hot-carrier parameters versus excitation intensity",
@@ -582,6 +662,32 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     fig.subplots_adjust(left=0.11, right=0.98, bottom=0.10, top=0.935, hspace=0.07, wspace=0.22)
     save_figure(fig, outpath)
     plt.close(fig)
+
+    panel_dir = _presentation_plot_dir(outpath)
+    _export_single_panel_figure(
+        panel_dir,
+        "temperature_vs_intensity",
+        lambda fig, ax: _plot_temperature_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title="Carrier temperature",
+    )
+    _export_single_panel_figure(
+        panel_dir,
+        "qfls_vs_intensity",
+        lambda fig, ax: _plot_qfls_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title="Quasi-Fermi level splitting",
+    )
+    _export_single_panel_figure(
+        panel_dir,
+        "chemical_potentials_vs_intensity",
+        lambda fig, ax: _plot_chemical_potential_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title="Carrier chemical potentials",
+    )
+    _export_single_panel_figure(
+        panel_dir,
+        "carrier_density_vs_intensity",
+        lambda fig, ax: _plot_carrier_density_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title="Carrier density",
+    )
 
 
 def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) -> None:
@@ -697,18 +803,6 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         vmin=float(np.min(temp_all)),
         vmax=float(np.max(temp_all) + (1e-9 if np.max(temp_all) == np.min(temp_all) else 0.0)),
     )
-
-    # Use shared x-axes within each column so only the bottom row carries x labels.
-    fig, axes = plt.subplots(
-        2,
-        2,
-        figsize=(8.8, 7.2),
-        sharex="col",
-    )
-    ax00, ax01 = axes[0]
-    ax10, ax11 = axes[1]
-    for ax in axes.ravel():
-        ax.set_box_aspect(0.92)
     temp_cmap = "viridis"
     fd_label_context = "default" if default_model == "fd" else "comparison"
     left_column_handles = [
@@ -742,213 +836,24 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         density_min_plot = float(np.min(density_points) / density_pad_factor)
         density_max_plot = float(np.max(density_points) * density_pad_factor)
 
-    if np.count_nonzero(valid_mb_state) > 0:
-        ax00.errorbar(
-            n_mb_cm3[valid_mb_state],
-            p_th_w_cm3[valid_mb_state],
-            xerr=n_mb_err_cm3[valid_mb_state],
-            yerr=_safe_log_yerr(
-                y=p_th_w_cm3[valid_mb_state],
-                err=p_th_err_w_cm3[valid_mb_state],
-            ),
-            fmt="none",
-            ecolor="#90a4ae",
-            alpha=0.22,
-            elinewidth=0.7,
-            capsize=1.5,
-            zorder=1,
-        )
-        ax00.scatter(
-            n_mb_cm3[valid_mb_state],
-            p_th_w_cm3[valid_mb_state],
-            c=temperature_k[valid_mb_state],
-            cmap=temp_cmap,
-            norm=temp_norm,
-            s=42,
-            marker="o",
-            edgecolors="white",
-            linewidths=0.45,
-            alpha=0.58,
-            zorder=2,
-        )
-    if np.count_nonzero(valid_fd_state) > 0:
-        ax00.errorbar(
-            n_fd_cm3[valid_fd_state],
-            p_th_w_cm3[valid_fd_state],
-            xerr=n_fd_err_cm3[valid_fd_state],
-            yerr=_safe_log_yerr(
-                y=p_th_w_cm3[valid_fd_state],
-                err=p_th_err_w_cm3[valid_fd_state],
-            ),
-            fmt="none",
-            ecolor="#455a64",
-            alpha=0.28,
-            elinewidth=0.8,
-            capsize=1.7,
-            zorder=2,
-        )
-        ax00.scatter(
-            n_fd_cm3[valid_fd_state],
-            p_th_w_cm3[valid_fd_state],
-            c=temperature_k[valid_fd_state],
-            cmap=temp_cmap,
-            norm=temp_norm,
-            s=58,
-            marker="^",
-            edgecolors="black",
-            linewidths=0.4,
-            alpha=0.92,
-            zorder=3,
-        )
-    style_axes(ax00, logx=True, logy=True)
-    ax00.tick_params(labelbottom=False)
-    ax00.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
-    ax00.legend(
-        handles=left_column_handles,
-        loc="lower right",
-        fontsize=LEGEND_FONT_SIZE,
-        frameon=False,
-    )
-    cbar00 = fig.colorbar(
-        cm.ScalarMappable(norm=temp_norm, cmap=temp_cmap),
-        ax=ax00,
-        pad=0.016,
-        fraction=0.045,
-    )
-    _style_colorbar(cbar00, r"$T$ (K)")
-    _add_panel_label(ax00, "(a)")
-
     n_default = n_fd_cm3 if default_model == "fd" else n_mb_cm3
     valid_default = valid_fd_state if default_model == "fd" else valid_mb_state
     n_default_plot = n_default[valid_default]
-    norm_n = LogNorm(vmin=float(np.min(n_default_plot)), vmax=float(np.max(n_default_plot)))
-    ax01.errorbar(
-        temperature_k[valid_default],
-        p_th_w_cm3[valid_default],
-        xerr=temperature_err_k[valid_default],
-        yerr=_safe_log_yerr(y=p_th_w_cm3[valid_default], err=p_th_err_w_cm3[valid_default]),
-        fmt="none",
-        ecolor="0.6",
-        alpha=0.35,
-        elinewidth=0.8,
-        capsize=1.8,
-        zorder=1,
+    norm_n = LogNorm(
+        vmin=float(np.min(n_default_plot)),
+        vmax=float(np.max(n_default_plot) + (1e-9 if np.max(n_default_plot) == np.min(n_default_plot) else 0.0)),
     )
-    s01 = ax01.scatter(
-        temperature_k[valid_default],
-        p_th_w_cm3[valid_default],
-        c=n_default_plot,
-        cmap="cividis",
-        norm=norm_n,
-        s=56,
-        edgecolors="white",
-        linewidths=0.5,
-        zorder=2,
-    )
-    style_axes(ax01, logy=True)
-    ax01.tick_params(labelbottom=False)
-    ax01.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
-    cbar01 = fig.colorbar(s01, ax=ax01, pad=0.016, fraction=0.042)
-    _style_colorbar(cbar01, r"$n$ (cm$^{-3}$)")
-    _add_panel_label(ax01, "(b)")
-
-    if np.count_nonzero(valid_mb_per_carrier) > 0:
-        ax10.errorbar(
-            n_mb_cm3[valid_mb_per_carrier],
-            p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
-            xerr=n_mb_err_cm3[valid_mb_per_carrier],
-            yerr=_safe_log_yerr(
-                y=p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
-                err=p_th_per_carrier_mb_err_ev_s[valid_mb_per_carrier],
-            ),
-            fmt="none",
-            ecolor="#8e24aa",
-            alpha=0.22,
-            elinewidth=0.7,
-            capsize=1.5,
-            zorder=1,
-        )
-        ax10.scatter(
-            n_mb_cm3[valid_mb_per_carrier],
-            p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
-            c=temperature_k[valid_mb_per_carrier],
-            cmap=temp_cmap,
-            norm=temp_norm,
-            s=42,
-            marker="o",
-            edgecolors="white",
-            linewidths=0.45,
-            alpha=0.58,
-            zorder=2,
-        )
-    if np.count_nonzero(valid_fd_per_carrier) > 0:
-        ax10.errorbar(
-            n_fd_cm3[valid_fd_per_carrier],
-            p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
-            xerr=n_fd_err_cm3[valid_fd_per_carrier],
-            yerr=_safe_log_yerr(
-                y=p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
-                err=p_th_per_carrier_fd_err_ev_s[valid_fd_per_carrier],
-            ),
-            fmt="none",
-            ecolor="#4a148c",
-            alpha=0.28,
-            elinewidth=0.8,
-            capsize=1.7,
-            zorder=2,
-        )
-        ax10.scatter(
-            n_fd_cm3[valid_fd_per_carrier],
-            p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
-            c=temperature_k[valid_fd_per_carrier],
-            cmap=temp_cmap,
-            norm=temp_norm,
-            s=58,
-            marker="^",
-            edgecolors="black",
-            linewidths=0.4,
-            alpha=0.92,
-            zorder=3,
-        )
-    style_axes(ax10, logx=True, logy=True)
-    ax10.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
-    ax10.set_ylabel(r"$P_{\mathrm{th}}/n$ (eV s$^{-1}$ carrier$^{-1}$)")
-    cbar10 = fig.colorbar(
-        cm.ScalarMappable(norm=temp_norm, cmap=temp_cmap),
-        ax=ax10,
-        pad=0.016,
-        fraction=0.045,
-    )
-    _style_colorbar(cbar10, r"$T$ (K)")
-    if np.isfinite(density_min_plot) and np.isfinite(density_max_plot) and (density_max_plot > density_min_plot):
-        ax00.set_xlim(density_min_plot, density_max_plot)
-    _add_panel_label(ax10, "(c)")
 
     intensity_norm = LogNorm(
         vmin=float(np.min(intensity_w_cm2[valid_thermal])),
-        vmax=float(np.max(intensity_w_cm2[valid_thermal])),
-    )
-    ax11.errorbar(
-        temperature_k[valid_thermal],
-        thermalized_energy_pair_ev[valid_thermal],
-        xerr=temperature_err_k[valid_thermal],
-        fmt="none",
-        ecolor="0.6",
-        alpha=0.35,
-        elinewidth=0.8,
-        capsize=1.8,
-        zorder=1,
-    )
-    s11 = ax11.scatter(
-        temperature_k[valid_thermal],
-        thermalized_energy_pair_ev[valid_thermal],
-        c=intensity_w_cm2[valid_thermal],
-        cmap="magma",
-        norm=intensity_norm,
-        s=56,
-        edgecolors="white",
-        linewidths=0.5,
-        zorder=2,
+        vmax=float(
+            np.max(intensity_w_cm2[valid_thermal])
+            + (
+                1e-9
+                if np.max(intensity_w_cm2[valid_thermal]) == np.min(intensity_w_cm2[valid_thermal])
+                else 0.0
+            )
+        ),
     )
     e_laser_ev = float(results_df["laser_photon_energy_ev"].to_numpy(dtype=float)[0])
     eta_values = results_df["plqy_eta"].to_numpy(dtype=float)
@@ -962,50 +867,325 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
         float(np.max(temperature_k[valid_thermal])) * 1.02,
         160,
     )
-    if abs(eta_max - eta_min) < 1e-9:
-        delta_e_line = e_laser_ev - (
-            EG_EV + (3.0 - 2.0 * eta_min) * (K_B / E_CHARGE) * t_line
-        )
-        ax11.plot(
-            t_line,
-            delta_e_line,
-            "--",
-            lw=1.2,
-            color="0.2",
-            label=r"$E_{laser}-(E_g+(3-2\eta)k_BT)$",
-        )
-    else:
-        delta_e_lo = e_laser_ev - (
-            EG_EV + (3.0 - 2.0 * eta_min) * (K_B / E_CHARGE) * t_line
-        )
-        delta_e_hi = e_laser_ev - (
-            EG_EV + (3.0 - 2.0 * eta_max) * (K_B / E_CHARGE) * t_line
-        )
-        lo = np.minimum(delta_e_lo, delta_e_hi)
-        hi = np.maximum(delta_e_lo, delta_e_hi)
-        ax11.fill_between(
-            t_line,
-            lo,
-            hi,
-            color="0.25",
-            alpha=0.15,
-            label=rf"Model envelope ($\eta \in [{eta_min:.3f}, {eta_max:.3f}]$)",
-        )
-        ax11.plot(t_line, lo, "--", lw=1.0, color="0.25", alpha=0.9)
-        ax11.plot(t_line, hi, "--", lw=1.0, color="0.25", alpha=0.9)
-    style_axes(ax11)
-    ax11.set_xlabel("Carrier temperature, $T$ (K)")
-    ax11.set_ylabel(r"Thermalized energy per pair (eV)")
-    ax11.legend(loc="upper right", fontsize=LEGEND_FONT_SIZE, frameon=False)
-    cbar11 = fig.colorbar(s11, ax=ax11, pad=0.016, fraction=0.042)
-    _style_colorbar(cbar11, r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
-    _add_panel_label(ax11, "(d)")
     temperature_points = np.concatenate([temperature_k[valid_default], temperature_k[valid_thermal]])
     temperature_points = temperature_points[np.isfinite(temperature_points)]
+    temperature_xlim: tuple[float, float] | None = None
     if temperature_points.size > 0:
         temp_span = float(np.max(temperature_points) - np.min(temperature_points))
         temp_pad = 3.0 if temp_span <= 0 else max(2.5, 0.06 * temp_span)
-        ax01.set_xlim(float(np.min(temperature_points) - temp_pad), float(np.max(temperature_points) + temp_pad))
+        temperature_xlim = (
+            float(np.min(temperature_points) - temp_pad),
+            float(np.max(temperature_points) + temp_pad),
+        )
+
+    def _set_density_xlim(ax: plt.Axes) -> None:
+        if np.isfinite(density_min_plot) and np.isfinite(density_max_plot) and (density_max_plot > density_min_plot):
+            ax.set_xlim(density_min_plot, density_max_plot)
+
+    def _set_temperature_xlim(ax: plt.Axes) -> None:
+        if temperature_xlim is not None and temperature_xlim[1] > temperature_xlim[0]:
+            ax.set_xlim(*temperature_xlim)
+
+    def _plot_density_power_panel(
+        fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        if np.count_nonzero(valid_mb_state) > 0:
+            ax.errorbar(
+                n_mb_cm3[valid_mb_state],
+                p_th_w_cm3[valid_mb_state],
+                xerr=n_mb_err_cm3[valid_mb_state],
+                yerr=_safe_log_yerr(
+                    y=p_th_w_cm3[valid_mb_state],
+                    err=p_th_err_w_cm3[valid_mb_state],
+                ),
+                fmt="none",
+                ecolor="#90a4ae",
+                alpha=0.22,
+                elinewidth=0.7,
+                capsize=1.5,
+                zorder=1,
+            )
+            ax.scatter(
+                n_mb_cm3[valid_mb_state],
+                p_th_w_cm3[valid_mb_state],
+                c=temperature_k[valid_mb_state],
+                cmap=temp_cmap,
+                norm=temp_norm,
+                s=42,
+                marker="o",
+                edgecolors="white",
+                linewidths=0.45,
+                alpha=0.58,
+                zorder=2,
+            )
+        if np.count_nonzero(valid_fd_state) > 0:
+            ax.errorbar(
+                n_fd_cm3[valid_fd_state],
+                p_th_w_cm3[valid_fd_state],
+                xerr=n_fd_err_cm3[valid_fd_state],
+                yerr=_safe_log_yerr(
+                    y=p_th_w_cm3[valid_fd_state],
+                    err=p_th_err_w_cm3[valid_fd_state],
+                ),
+                fmt="none",
+                ecolor="#455a64",
+                alpha=0.28,
+                elinewidth=0.8,
+                capsize=1.7,
+                zorder=2,
+            )
+            ax.scatter(
+                n_fd_cm3[valid_fd_state],
+                p_th_w_cm3[valid_fd_state],
+                c=temperature_k[valid_fd_state],
+                cmap=temp_cmap,
+                norm=temp_norm,
+                s=58,
+                marker="^",
+                edgecolors="black",
+                linewidths=0.4,
+                alpha=0.92,
+                zorder=3,
+            )
+        style_axes(ax, logx=True, logy=True)
+        ax.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+        if show_xlabel:
+            ax.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        ax.legend(
+            handles=left_column_handles,
+            loc="lower right",
+            fontsize=LEGEND_FONT_SIZE,
+            frameon=False,
+        )
+        cbar = fig.colorbar(
+            cm.ScalarMappable(norm=temp_norm, cmap=temp_cmap),
+            ax=ax,
+            pad=0.016,
+            fraction=0.045,
+        )
+        _style_colorbar(cbar, r"$T$ (K)")
+        _set_density_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(a)")
+
+    def _plot_temperature_power_panel(
+        fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.errorbar(
+            temperature_k[valid_default],
+            p_th_w_cm3[valid_default],
+            xerr=temperature_err_k[valid_default],
+            yerr=_safe_log_yerr(y=p_th_w_cm3[valid_default], err=p_th_err_w_cm3[valid_default]),
+            fmt="none",
+            ecolor="0.6",
+            alpha=0.35,
+            elinewidth=0.8,
+            capsize=1.8,
+            zorder=1,
+        )
+        scatter = ax.scatter(
+            temperature_k[valid_default],
+            p_th_w_cm3[valid_default],
+            c=n_default_plot,
+            cmap="cividis",
+            norm=norm_n,
+            s=56,
+            edgecolors="white",
+            linewidths=0.5,
+            zorder=2,
+        )
+        style_axes(ax, logy=True)
+        ax.set_ylabel(r"$P_{\mathrm{th}}$ (W cm$^{-3}$)")
+        if show_xlabel:
+            ax.set_xlabel(r"Carrier temperature, $T$ (K)")
+        else:
+            ax.tick_params(labelbottom=False)
+        cbar = fig.colorbar(scatter, ax=ax, pad=0.016, fraction=0.042)
+        _style_colorbar(cbar, r"$n$ (cm$^{-3}$)")
+        _set_temperature_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(b)")
+
+    def _plot_per_carrier_panel(
+        fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        if np.count_nonzero(valid_mb_per_carrier) > 0:
+            ax.errorbar(
+                n_mb_cm3[valid_mb_per_carrier],
+                p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
+                xerr=n_mb_err_cm3[valid_mb_per_carrier],
+                yerr=_safe_log_yerr(
+                    y=p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
+                    err=p_th_per_carrier_mb_err_ev_s[valid_mb_per_carrier],
+                ),
+                fmt="none",
+                ecolor="#8e24aa",
+                alpha=0.22,
+                elinewidth=0.7,
+                capsize=1.5,
+                zorder=1,
+            )
+            ax.scatter(
+                n_mb_cm3[valid_mb_per_carrier],
+                p_th_per_carrier_mb_ev_s[valid_mb_per_carrier],
+                c=temperature_k[valid_mb_per_carrier],
+                cmap=temp_cmap,
+                norm=temp_norm,
+                s=42,
+                marker="o",
+                edgecolors="white",
+                linewidths=0.45,
+                alpha=0.58,
+                zorder=2,
+            )
+        if np.count_nonzero(valid_fd_per_carrier) > 0:
+            ax.errorbar(
+                n_fd_cm3[valid_fd_per_carrier],
+                p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
+                xerr=n_fd_err_cm3[valid_fd_per_carrier],
+                yerr=_safe_log_yerr(
+                    y=p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
+                    err=p_th_per_carrier_fd_err_ev_s[valid_fd_per_carrier],
+                ),
+                fmt="none",
+                ecolor="#4a148c",
+                alpha=0.28,
+                elinewidth=0.8,
+                capsize=1.7,
+                zorder=2,
+            )
+            ax.scatter(
+                n_fd_cm3[valid_fd_per_carrier],
+                p_th_per_carrier_fd_ev_s[valid_fd_per_carrier],
+                c=temperature_k[valid_fd_per_carrier],
+                cmap=temp_cmap,
+                norm=temp_norm,
+                s=58,
+                marker="^",
+                edgecolors="black",
+                linewidths=0.4,
+                alpha=0.92,
+                zorder=3,
+            )
+        style_axes(ax, logx=True, logy=True)
+        ax.set_ylabel(r"$P_{\mathrm{th}}/n$ (eV s$^{-1}$ carrier$^{-1}$)")
+        if show_xlabel:
+            ax.set_xlabel(r"Carrier density, $n$ (cm$^{-3}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        cbar = fig.colorbar(
+            cm.ScalarMappable(norm=temp_norm, cmap=temp_cmap),
+            ax=ax,
+            pad=0.016,
+            fraction=0.045,
+        )
+        _style_colorbar(cbar, r"$T$ (K)")
+        _set_density_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(c)")
+
+    def _plot_thermalized_energy_panel(
+        fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.errorbar(
+            temperature_k[valid_thermal],
+            thermalized_energy_pair_ev[valid_thermal],
+            xerr=temperature_err_k[valid_thermal],
+            fmt="none",
+            ecolor="0.6",
+            alpha=0.35,
+            elinewidth=0.8,
+            capsize=1.8,
+            zorder=1,
+        )
+        scatter = ax.scatter(
+            temperature_k[valid_thermal],
+            thermalized_energy_pair_ev[valid_thermal],
+            c=intensity_w_cm2[valid_thermal],
+            cmap="magma",
+            norm=intensity_norm,
+            s=56,
+            edgecolors="white",
+            linewidths=0.5,
+            zorder=2,
+        )
+        if abs(eta_max - eta_min) < 1e-9:
+            delta_e_line = e_laser_ev - (
+                EG_EV + (3.0 - 2.0 * eta_min) * (K_B / E_CHARGE) * t_line
+            )
+            ax.plot(
+                t_line,
+                delta_e_line,
+                "--",
+                lw=1.2,
+                color="0.2",
+                label=r"$E_{laser}-(E_g+(3-2\eta)k_BT)$",
+            )
+        else:
+            delta_e_lo = e_laser_ev - (
+                EG_EV + (3.0 - 2.0 * eta_min) * (K_B / E_CHARGE) * t_line
+            )
+            delta_e_hi = e_laser_ev - (
+                EG_EV + (3.0 - 2.0 * eta_max) * (K_B / E_CHARGE) * t_line
+            )
+            lo = np.minimum(delta_e_lo, delta_e_hi)
+            hi = np.maximum(delta_e_lo, delta_e_hi)
+            ax.fill_between(
+                t_line,
+                lo,
+                hi,
+                color="0.25",
+                alpha=0.15,
+                label=rf"Model envelope ($\eta \in [{eta_min:.3f}, {eta_max:.3f}]$)",
+            )
+            ax.plot(t_line, lo, "--", lw=1.0, color="0.25", alpha=0.9)
+            ax.plot(t_line, hi, "--", lw=1.0, color="0.25", alpha=0.9)
+        style_axes(ax)
+        ax.set_ylabel(r"Thermalized energy per pair (eV)")
+        if show_xlabel:
+            ax.set_xlabel(r"Carrier temperature, $T$ (K)")
+        else:
+            ax.tick_params(labelbottom=False)
+        ax.legend(loc="upper right", fontsize=LEGEND_FONT_SIZE, frameon=False)
+        cbar = fig.colorbar(scatter, ax=ax, pad=0.016, fraction=0.042)
+        _style_colorbar(cbar, r"$I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+        _set_temperature_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(d)")
+
+    # Use shared x-axes within each column so only the bottom row carries x labels.
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(8.8, 7.2),
+        sharex="col",
+    )
+    ax00, ax01 = axes[0]
+    ax10, ax11 = axes[1]
+    for ax in axes.ravel():
+        ax.set_box_aspect(0.92)
+    _plot_density_power_panel(fig, ax00, show_xlabel=False, show_panel_label=True)
+    _plot_temperature_power_panel(fig, ax01, show_xlabel=False, show_panel_label=True)
+    _plot_per_carrier_panel(fig, ax10, show_xlabel=True, show_panel_label=True)
+    _plot_thermalized_energy_panel(fig, ax11, show_xlabel=True, show_panel_label=True)
 
     fig.suptitle(
         r"Thermalized-power diagnostics in carrier-state space",
@@ -1023,6 +1203,32 @@ def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) 
     )
     save_figure(fig, outpath)
     plt.close(fig)
+
+    panel_dir = _presentation_plot_dir(outpath)
+    _export_single_panel_figure(
+        panel_dir,
+        "thermalized_power_vs_carrier_density",
+        lambda fig, ax: _plot_density_power_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title=r"Thermalized power vs carrier density",
+    )
+    _export_single_panel_figure(
+        panel_dir,
+        "thermalized_power_vs_temperature",
+        lambda fig, ax: _plot_temperature_power_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title=r"Thermalized power vs temperature",
+    )
+    _export_single_panel_figure(
+        panel_dir,
+        "per_carrier_thermalized_power_vs_density",
+        lambda fig, ax: _plot_per_carrier_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title=r"Per-carrier thermalized power",
+    )
+    _export_single_panel_figure(
+        panel_dir,
+        "thermalized_energy_per_pair_vs_temperature",
+        lambda fig, ax: _plot_thermalized_energy_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title=r"Thermalized energy per pair",
+    )
 
 
 def plot_recombination_channel_contributions(
@@ -1087,6 +1293,225 @@ def plot_recombination_channel_contributions(
     x_min_plot = float(np.min(x) / x_pad_factor)
     x_max_plot = float(np.max(x) * x_pad_factor)
 
+    def _set_common_xlim(ax: plt.Axes) -> None:
+        if x_max_plot > x_min_plot:
+            ax.set_xlim(x_min_plot, x_max_plot)
+
+    def _plot_recombination_power_panel(
+        _fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.plot(
+            x,
+            p_nonrad_w_cm3,
+            "o-",
+            color="#455a64",
+            lw=1.45,
+            ms=4.0,
+            label=r"$P_{\mathrm{nonrad}}$",
+        )
+        ax.plot(
+            x,
+            p_rad_w_cm3,
+            "s-",
+            color="#f4511e",
+            lw=1.35,
+            ms=3.8,
+            label=r"$P_{\mathrm{rad}}$",
+        )
+        ax.plot(
+            x,
+            p_rec_w_cm3,
+            "-",
+            color="#1e88e5",
+            lw=1.35,
+            label=r"$P_{\mathrm{rec}} = P_{\mathrm{nonrad}} + P_{\mathrm{rad}}$",
+        )
+        ax.plot(
+            x,
+            p_rec_eta0_w_cm3,
+            "--",
+            color="0.20",
+            lw=1.15,
+            label=r"$P_{\mathrm{rec}}$ if $\eta = 0$",
+        )
+        ax.fill_between(
+            x,
+            p_rec_w_cm3,
+            p_rec_eta0_w_cm3,
+            color="#90caf9",
+            alpha=0.18,
+        )
+        style_axes(ax, logx=True, logy=True)
+        ax.set_ylabel(r"Power density (W cm$^{-3}$)")
+        if show_xlabel:
+            ax.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        ax.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
+        _set_common_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(a)")
+
+    def _plot_fraction_panel(
+        _fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.plot(
+            x,
+            nonrad_fraction_pct,
+            "o-",
+            color="#546e7a",
+            lw=1.35,
+            ms=4.0,
+            label=r"$P_{\mathrm{nonrad}} / P_{\mathrm{abs}}$",
+        )
+        ax.plot(
+            x,
+            rad_fraction_pct,
+            "s-",
+            color="#ff7043",
+            lw=1.35,
+            ms=3.8,
+            label=r"$P_{\mathrm{rad}} / P_{\mathrm{abs}}$",
+        )
+        ax.plot(
+            x,
+            eta_pct,
+            "--",
+            color="#6a1b9a",
+            lw=1.2,
+            label=r"$\eta = \phi_{\mathrm{rad}} / \phi_{\mathrm{abs}}$",
+        )
+        positive_fraction_pct = np.concatenate(
+            [
+                eta_pct[eta_pct > 0],
+                rad_fraction_pct[rad_fraction_pct > 0],
+                nonrad_fraction_pct[nonrad_fraction_pct > 0],
+            ]
+        )
+        if positive_fraction_pct.size > 0:
+            y_min = max(float(np.min(positive_fraction_pct)) / 1.6, 1e-4)
+            y_max = min(float(np.max(positive_fraction_pct)) * 1.35, 300.0)
+            style_axes(ax, logx=True, logy=True)
+            ax.set_ylim(y_min, y_max)
+        else:
+            style_axes(ax, logx=True)
+            ax.set_ylim(0.0, 1.0)
+        ax.set_ylabel("Fraction of absorbed power (%)")
+        if show_xlabel:
+            ax.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        ax.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
+        _set_common_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(b)")
+
+    def _plot_thermalized_power_panel(
+        _fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.plot(
+            x,
+            p_th_w_cm3,
+            "o-",
+            color="#2e7d32",
+            lw=1.45,
+            ms=4.0,
+            label=r"$P_{\mathrm{th}}$ with measured $\eta$",
+        )
+        ax.plot(
+            x,
+            p_th_eta0_w_cm3,
+            "--",
+            color="#8bc34a",
+            lw=1.15,
+            label=r"$P_{\mathrm{th}}$ if $\eta = 0$",
+        )
+        ax.fill_between(
+            x,
+            p_th_eta0_w_cm3,
+            p_th_w_cm3,
+            color="#66bb6a",
+            alpha=0.18,
+        )
+        style_axes(ax, logx=True, logy=True)
+        ax.set_ylabel(r"Power density (W cm$^{-3}$)")
+        if show_xlabel:
+            ax.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        ax.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
+        _set_common_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(c)")
+
+    def _plot_relative_change_panel(
+        _fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        show_xlabel: bool,
+        show_panel_label: bool,
+    ) -> None:
+        ax.plot(
+            x,
+            p_th_boost_pct,
+            "o-",
+            color="#2e7d32",
+            lw=1.4,
+            ms=4.0,
+            label=r"$\Delta P_{\mathrm{th}} / P_{\mathrm{th}}(\eta = 0)$",
+        )
+        ax.plot(
+            x,
+            p_rec_reduction_pct,
+            "s--",
+            color="#1e88e5",
+            lw=1.2,
+            ms=3.8,
+            label=r"$[P_{\mathrm{rec}}(\eta = 0) - P_{\mathrm{rec}}] / P_{\mathrm{rec}}(\eta = 0)$",
+        )
+        ax.plot(
+            x,
+            p_abs_correction_pct,
+            ":",
+            color="#f4511e",
+            lw=1.2,
+            label=r"$\Delta P_{\mathrm{th}} / P_{\mathrm{abs}}$",
+        )
+        style_axes(ax, logx=True)
+        finite_pct = np.concatenate(
+            [
+                p_th_boost_pct[np.isfinite(p_th_boost_pct)],
+                p_rec_reduction_pct[np.isfinite(p_rec_reduction_pct)],
+                p_abs_correction_pct[np.isfinite(p_abs_correction_pct)],
+            ]
+        )
+        finite_pct = finite_pct[finite_pct >= 0]
+        ax.set_ylim(
+            0.0,
+            float(np.max(finite_pct) * 1.18) if finite_pct.size > 0 else 1.0,
+        )
+        ax.set_ylabel("Relative change (%)")
+        if show_xlabel:
+            ax.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
+        else:
+            ax.tick_params(labelbottom=False)
+        ax.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
+        _set_common_xlim(ax)
+        if show_panel_label:
+            _add_panel_label(ax, "(d)")
+
     fig, axes = plt.subplots(
         2,
         2,
@@ -1094,175 +1519,10 @@ def plot_recombination_channel_contributions(
         sharex=True,
     )
     ax00, ax01, ax10, ax11 = axes.ravel()
-
-    ax00.plot(
-        x,
-        p_nonrad_w_cm3,
-        "o-",
-        color="#455a64",
-        lw=1.45,
-        ms=4.0,
-        label=r"$P_{\mathrm{nonrad}}$",
-    )
-    ax00.plot(
-        x,
-        p_rad_w_cm3,
-        "s-",
-        color="#f4511e",
-        lw=1.35,
-        ms=3.8,
-        label=r"$P_{\mathrm{rad}}$",
-    )
-    ax00.plot(
-        x,
-        p_rec_w_cm3,
-        "-",
-        color="#1e88e5",
-        lw=1.35,
-        label=r"$P_{\mathrm{rec}} = P_{\mathrm{nonrad}} + P_{\mathrm{rad}}$",
-    )
-    ax00.plot(
-        x,
-        p_rec_eta0_w_cm3,
-        "--",
-        color="0.20",
-        lw=1.15,
-        label=r"$P_{\mathrm{rec}}$ if $\eta = 0$",
-    )
-    ax00.fill_between(
-        x,
-        p_rec_w_cm3,
-        p_rec_eta0_w_cm3,
-        color="#90caf9",
-        alpha=0.18,
-    )
-    style_axes(ax00, logx=True, logy=True)
-    ax00.set_ylabel(r"Power density (W cm$^{-3}$)")
-    ax00.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
-    _add_panel_label(ax00, "(a)")
-
-    ax01.plot(
-        x,
-        nonrad_fraction_pct,
-        "o-",
-        color="#546e7a",
-        lw=1.35,
-        ms=4.0,
-        label=r"$P_{\mathrm{nonrad}} / P_{\mathrm{abs}}$",
-    )
-    ax01.plot(
-        x,
-        rad_fraction_pct,
-        "s-",
-        color="#ff7043",
-        lw=1.35,
-        ms=3.8,
-        label=r"$P_{\mathrm{rad}} / P_{\mathrm{abs}}$",
-    )
-    ax01.plot(
-        x,
-        eta_pct,
-        "--",
-        color="#6a1b9a",
-        lw=1.2,
-        label=r"$\eta = \phi_{\mathrm{rad}} / \phi_{\mathrm{abs}}$",
-    )
-    positive_fraction_pct = np.concatenate(
-        [
-            eta_pct[eta_pct > 0],
-            rad_fraction_pct[rad_fraction_pct > 0],
-            nonrad_fraction_pct[nonrad_fraction_pct > 0],
-        ]
-    )
-    if positive_fraction_pct.size > 0:
-        y_min = max(float(np.min(positive_fraction_pct)) / 1.6, 1e-4)
-        y_max = min(float(np.max(positive_fraction_pct)) * 1.35, 300.0)
-        style_axes(ax01, logx=True, logy=True)
-        ax01.set_ylim(y_min, y_max)
-    else:
-        style_axes(ax01, logx=True)
-        ax01.set_ylim(0.0, 1.0)
-    ax01.set_ylabel("Fraction of absorbed power (%)")
-    ax01.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
-    _add_panel_label(ax01, "(b)")
-
-    ax10.plot(
-        x,
-        p_th_w_cm3,
-        "o-",
-        color="#2e7d32",
-        lw=1.45,
-        ms=4.0,
-        label=r"$P_{\mathrm{th}}$ with measured $\eta$",
-    )
-    ax10.plot(
-        x,
-        p_th_eta0_w_cm3,
-        "--",
-        color="#8bc34a",
-        lw=1.15,
-        label=r"$P_{\mathrm{th}}$ if $\eta = 0$",
-    )
-    ax10.fill_between(
-        x,
-        p_th_eta0_w_cm3,
-        p_th_w_cm3,
-        color="#66bb6a",
-        alpha=0.18,
-    )
-    style_axes(ax10, logx=True, logy=True)
-    ax10.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
-    ax10.set_ylabel(r"Power density (W cm$^{-3}$)")
-    ax10.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
-    _add_panel_label(ax10, "(c)")
-
-    ax11.plot(
-        x,
-        p_th_boost_pct,
-        "o-",
-        color="#2e7d32",
-        lw=1.4,
-        ms=4.0,
-        label=r"$\Delta P_{\mathrm{th}} / P_{\mathrm{th}}(\eta = 0)$",
-    )
-    ax11.plot(
-        x,
-        p_rec_reduction_pct,
-        "s--",
-        color="#1e88e5",
-        lw=1.2,
-        ms=3.8,
-        label=r"$[P_{\mathrm{rec}}(\eta = 0) - P_{\mathrm{rec}}] / P_{\mathrm{rec}}(\eta = 0)$",
-    )
-    ax11.plot(
-        x,
-        p_abs_correction_pct,
-        ":",
-        color="#f4511e",
-        lw=1.2,
-        label=r"$\Delta P_{\mathrm{th}} / P_{\mathrm{abs}}$",
-    )
-    style_axes(ax11, logx=True)
-    finite_pct = np.concatenate(
-        [
-            p_th_boost_pct[np.isfinite(p_th_boost_pct)],
-            p_rec_reduction_pct[np.isfinite(p_rec_reduction_pct)],
-            p_abs_correction_pct[np.isfinite(p_abs_correction_pct)],
-        ]
-    )
-    finite_pct = finite_pct[finite_pct >= 0]
-    ax11.set_ylim(
-        0.0,
-        float(np.max(finite_pct) * 1.18) if finite_pct.size > 0 else 1.0,
-    )
-    ax11.set_xlabel(r"Excitation intensity, $I_{\mathrm{exc}}$ (W cm$^{-2}$)")
-    ax11.set_ylabel("Relative change (%)")
-    ax11.legend(loc="lower right", fontsize=LEGEND_FONT_SIZE, frameon=False)
-    _add_panel_label(ax11, "(d)")
-
-    if x_max_plot > x_min_plot:
-        for ax in (ax00, ax01, ax10, ax11):
-            ax.set_xlim(x_min_plot, x_max_plot)
+    _plot_recombination_power_panel(fig, ax00, show_xlabel=False, show_panel_label=True)
+    _plot_fraction_panel(fig, ax01, show_xlabel=False, show_panel_label=True)
+    _plot_thermalized_power_panel(fig, ax10, show_xlabel=True, show_panel_label=True)
+    _plot_relative_change_panel(fig, ax11, show_xlabel=True, show_panel_label=True)
 
     fig.suptitle(
         r"Radiative versus nonradiative recombination contributions",
@@ -1273,6 +1533,32 @@ def plot_recombination_channel_contributions(
     fig.subplots_adjust(left=0.10, right=0.98, bottom=0.10, top=0.935, hspace=0.08, wspace=0.20)
     save_figure(fig, outpath)
     plt.close(fig)
+
+    panel_dir = _presentation_plot_dir(outpath)
+    _export_single_panel_figure(
+        panel_dir,
+        "recombination_power_channels",
+        lambda fig, ax: _plot_recombination_power_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title="Recombination power channels",
+    )
+    _export_single_panel_figure(
+        panel_dir,
+        "absorbed_power_fractions_and_plqy",
+        lambda fig, ax: _plot_fraction_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title="Absorbed-power fractions and PLQY",
+    )
+    _export_single_panel_figure(
+        panel_dir,
+        "thermalized_power_radiative_correction",
+        lambda fig, ax: _plot_thermalized_power_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title="Thermalized power with radiative correction",
+    )
+    _export_single_panel_figure(
+        panel_dir,
+        "relative_radiative_correction_size",
+        lambda fig, ax: _plot_relative_change_panel(fig, ax, show_xlabel=True, show_panel_label=False),
+        title="Relative size of the radiative correction",
+    )
 
 
 def plot_mb_validity_limit(
