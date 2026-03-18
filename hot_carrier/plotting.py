@@ -277,6 +277,51 @@ def _build_tsai_q_fit_temperature_vs_intensity_curve(
     return x_fit[valid_curve], temperature_fit[valid_curve]
 
 
+def _compute_linear_fit(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+) -> tuple[float, float, float] | None:
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    valid = np.isfinite(x) & np.isfinite(y)
+    if np.count_nonzero(valid) < 2:
+        return None
+
+    x = x[valid]
+    y = y[valid]
+    if np.allclose(x, x[0]):
+        return None
+
+    slope, intercept = np.polyfit(x, y, deg=1)
+    y_fit = slope * x + intercept
+    ss_res = float(np.sum((y - y_fit) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+    return float(slope), float(intercept), float(r2)
+
+
+def _build_linear_fit_curve(
+    x_values: np.ndarray,
+    slope: float,
+    intercept: float,
+    n_points: int = 240,
+) -> tuple[np.ndarray, np.ndarray]:
+    x = np.asarray(x_values, dtype=float)
+    valid = np.isfinite(x) & (x > 0)
+    if np.count_nonzero(valid) < 2:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    x_min = float(np.min(x[valid]))
+    x_max = float(np.max(x[valid]))
+    if x_max <= x_min:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    x_fit = np.linspace(x_min, x_max, int(n_points), dtype=float)
+    y_fit = slope * x_fit + intercept
+    valid_curve = np.isfinite(x_fit) & np.isfinite(y_fit)
+    return x_fit[valid_curve], y_fit[valid_curve]
+
+
 def _format_tsai_q_fit_summary(
     label: str,
     fit_result: tuple[float, float, float] | None,
@@ -501,23 +546,16 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     n_err = results_df["carrier_density_err_total_cm3"].to_numpy(dtype=float)
     n_fd_vals = results_df["carrier_density_fd_cm3"].to_numpy(dtype=float)
     n_fd_err = results_df["carrier_density_fd_err_total_cm3"].to_numpy(dtype=float)
-    p_th_w_cm3 = results_df.get(
-        "thermalized_power_w_cm3",
-        pd.Series(np.full(results_df.shape[0], np.nan, dtype=float), index=results_df.index),
-    ).to_numpy(dtype=float)
     temperature_k = results_df["temperature_k"].to_numpy(dtype=float)
-    temperature_rise_k = temperature_k - TSAI_LATTICE_TEMPERATURE_K
-    q_fit_temperature = _compute_tsai_q_factor_fit(p_th_w_cm3, temperature_rise_k)
-    if q_fit_temperature is None:
-        x_q_fit = np.array([], dtype=float)
-        t_q_fit = np.array([], dtype=float)
+    temperature_fit = _compute_linear_fit(x, temperature_k)
+    if temperature_fit is None:
+        x_temperature_fit = np.array([], dtype=float)
+        t_temperature_fit = np.array([], dtype=float)
     else:
-        x_q_fit, t_q_fit = _build_tsai_q_fit_temperature_vs_intensity_curve(
-            intensity_w_cm2=x,
-            pth_w_cm3=p_th_w_cm3,
-            temperature_rise_k=temperature_rise_k,
-            slope=q_fit_temperature[0],
-            intercept=q_fit_temperature[1],
+        x_temperature_fit, t_temperature_fit = _build_linear_fit_curve(
+            x_values=x,
+            slope=temperature_fit[0],
+            intercept=temperature_fit[1],
         )
 
     def _set_common_intensity_xlim(ax: plt.Axes) -> None:
@@ -542,10 +580,10 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
             elinewidth=1.0,
             color="#1565c0",
         )
-        if x_q_fit.size >= 2:
+        if x_temperature_fit.size >= 2:
             ax.plot(
-                x_q_fit,
-                t_q_fit,
+                x_temperature_fit,
+                t_temperature_fit,
                 color="#263238",
                 lw=1.2,
                 ls="--",
@@ -560,12 +598,12 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         else:
             ax.tick_params(labelbottom=False)
         _set_common_intensity_xlim(ax)
-        q_summary = _format_tsai_q_fit_summary("Exp", q_fit_temperature)
-        if q_summary is not None:
-            q_text_artist = ax.text(
+        if temperature_fit is not None:
+            fit_text_artist = ax.text(
                 0.03,
                 0.97,
-                "Q from linear fit:\n" + q_summary,
+                f"Linear fit: T = ({temperature_fit[0]:.3e}) I + ({temperature_fit[1]:.2f})\n"
+                + rf"$R^2$ = {temperature_fit[2]:.3f}",
                 transform=ax.transAxes,
                 ha="left",
                 va="top",
@@ -577,8 +615,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
                     "alpha": 0.84,
                 },
             )
-            _raise_annotation(q_text_artist)
-        if x_q_fit.size >= 2:
+            _raise_annotation(fit_text_artist)
+        if x_temperature_fit.size >= 2:
             ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
         if show_panel_label:
             _add_panel_label(ax, "(a)")
@@ -784,6 +822,113 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         lambda fig, ax: _plot_carrier_density_panel(fig, ax, show_xlabel=True, show_panel_label=False),
         title="Carrier density",
     )
+
+
+def plot_temperature_vs_thermalized_power(results_df: pd.DataFrame, outpath: Path) -> None:
+    p_th_w_cm3 = results_df.get(
+        "thermalized_power_w_cm3",
+        pd.Series(np.full(results_df.shape[0], np.nan, dtype=float), index=results_df.index),
+    ).to_numpy(dtype=float)
+    p_th_err_w_cm3 = _sanitize_nonnegative(
+        results_df.get(
+            "thermalized_power_err_w_cm3",
+            pd.Series(np.zeros(results_df.shape[0], dtype=float), index=results_df.index),
+        ).to_numpy(dtype=float)
+    )
+    temperature_k = results_df["temperature_k"].to_numpy(dtype=float)
+    temperature_err_k = _sanitize_nonnegative(
+        results_df.get(
+            "temperature_err_total_k",
+            pd.Series(np.zeros(results_df.shape[0], dtype=float), index=results_df.index),
+        ).to_numpy(dtype=float)
+    )
+    temperature_rise_k = temperature_k - TSAI_LATTICE_TEMPERATURE_K
+
+    valid = (
+        np.isfinite(p_th_w_cm3)
+        & (p_th_w_cm3 > 0)
+        & np.isfinite(temperature_k)
+        & (temperature_k > 0)
+    )
+    if np.count_nonzero(valid) < 2:
+        return
+
+    p_th_plot = p_th_w_cm3[valid]
+    p_th_err_plot = p_th_err_w_cm3[valid]
+    temperature_plot = temperature_k[valid]
+    temperature_err_plot = temperature_err_k[valid]
+    temperature_rise_plot = temperature_rise_k[valid]
+
+    linear_fit = _compute_linear_fit(p_th_plot, temperature_plot)
+    if linear_fit is None:
+        x_linear_fit = np.array([], dtype=float)
+        y_linear_fit = np.array([], dtype=float)
+    else:
+        x_linear_fit, y_linear_fit = _build_linear_fit_curve(
+            x_values=p_th_plot,
+            slope=linear_fit[0],
+            intercept=linear_fit[1],
+        )
+
+    fig, ax = plt.subplots(figsize=_page_single_column_figsize(PAGE_MEDIUM_FIG_HEIGHT_IN))
+    ax.errorbar(
+        p_th_plot,
+        temperature_plot,
+        xerr=p_th_err_plot,
+        yerr=temperature_err_plot,
+        fmt="o",
+        linestyle="none",
+        ms=4.5,
+        capsize=2.5,
+        elinewidth=1.0,
+        color="#1565c0",
+    )
+    if x_linear_fit.size >= 2:
+        ax.plot(
+            x_linear_fit,
+            y_linear_fit,
+            color="#263238",
+            lw=1.2,
+            ls="--",
+            alpha=0.92,
+            label="Linear fit",
+            zorder=2,
+        )
+
+    style_axes(ax, logx=True)
+    ax.set_xlabel(r"Thermalized power, $P_{\mathrm{th}}$ (W cm$^{-3}$)")
+    ax.set_ylabel(r"Temperature, $T$ (K)")
+
+    text_lines: list[str] = []
+    if linear_fit is not None:
+        text_lines.append(
+            f"Linear fit: T = ({linear_fit[0]:.3e}) P_th + ({linear_fit[1]:.2f})"
+        )
+        text_lines.append(rf"$R^2$ = {linear_fit[2]:.3f}")
+    if text_lines:
+        fit_text_artist = ax.text(
+            0.03,
+            0.97,
+            "\n".join(text_lines),
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=ANNOTATION_FONT_SIZE,
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "none",
+                "boxstyle": "square,pad=0.2",
+                "alpha": 0.84,
+            },
+        )
+        _raise_annotation(fit_text_artist)
+
+    if x_linear_fit.size >= 2:
+        ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
+
+    fig.subplots_adjust(left=0.12, right=0.97, bottom=0.12, top=0.92)
+    save_figure(fig, outpath)
+    plt.close(fig)
 
 
 def plot_thermalized_power_diagnostics(results_df: pd.DataFrame, outpath: Path) -> None:

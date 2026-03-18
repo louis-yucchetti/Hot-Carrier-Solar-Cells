@@ -50,6 +50,7 @@ from .plotting import (
     plot_raw_spectra,
     plot_single_fit,
     plot_summary,
+    plot_temperature_vs_thermalized_power,
     plot_mb_validity_limit,
     plot_thermalized_power_diagnostics,
     plot_tsai_temperature_rise_vs_pth_density,
@@ -328,6 +329,7 @@ def _print_run_summary(
     print(f"Spectrum fits:    {fit_dir}")
     print(f"Results table:    {out_dir / 'fit_results.csv'}")
     print(f"Summary figure:   {out_dir / 'parameters_vs_intensity.png'}")
+    print(f"T vs Pth figure:  {out_dir / 'temperature_vs_thermalized_power.png'}")
     print(f"Power figure:     {out_dir / 'thermalized_power_diagnostics.png'}")
     print(f"PLQY figure:      {out_dir / 'recombination_channel_contributions.png'}")
     print(f"Presentation PNGs:{out_dir / 'presentation_plots'}")
@@ -466,6 +468,10 @@ def main() -> None:
         legacy_tsai_overlay_csv.unlink()
     results_df.to_csv(out_dir / "fit_results.csv", index=False)
     plot_summary(results_df, out_dir / "parameters_vs_intensity.png")
+    plot_temperature_vs_thermalized_power(
+        results_df,
+        out_dir / "temperature_vs_thermalized_power.png",
+    )
     legacy_power_plot = out_dir / "thermalized_power_vs_absorbed.png"
     if legacy_power_plot.exists():
         legacy_power_plot.unlink()
