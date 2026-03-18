@@ -230,6 +230,53 @@ def _build_tsai_q_fit_curve(
     return pth_fit[valid_curve], delta_t_grid[valid_curve]
 
 
+def _build_tsai_q_fit_temperature_vs_intensity_curve(
+    intensity_w_cm2: np.ndarray,
+    pth_w_cm3: np.ndarray,
+    temperature_rise_k: np.ndarray,
+    slope: float,
+    intercept: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    intensity = np.asarray(intensity_w_cm2, dtype=float)
+    pth_target = np.asarray(pth_w_cm3, dtype=float)
+    delta_t_reference = np.asarray(temperature_rise_k, dtype=float)
+
+    fit_pth, fit_dt = _build_tsai_q_fit_curve(
+        temperature_rise_k=delta_t_reference,
+        slope=slope,
+        intercept=intercept,
+        n_points=480,
+    )
+    if fit_pth.size < 2:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    order_fit = np.argsort(fit_pth)
+    pth_sorted = fit_pth[order_fit]
+    dt_sorted = fit_dt[order_fit]
+    pth_unique, unique_idx = np.unique(pth_sorted, return_index=True)
+    dt_unique = dt_sorted[unique_idx]
+    if pth_unique.size < 2:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    valid = (
+        np.isfinite(intensity)
+        & (intensity > 0)
+        & np.isfinite(pth_target)
+        & (pth_target >= float(np.min(pth_unique)))
+        & (pth_target <= float(np.max(pth_unique)))
+    )
+    if np.count_nonzero(valid) < 2:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    order = np.argsort(intensity[valid])
+    x_fit = intensity[valid][order]
+    dt_fit = np.interp(pth_target[valid][order], pth_unique, dt_unique)
+    temperature_fit = TSAI_LATTICE_TEMPERATURE_K + dt_fit
+
+    valid_curve = np.isfinite(x_fit) & (x_fit > 0) & np.isfinite(temperature_fit) & (temperature_fit > 0)
+    return x_fit[valid_curve], temperature_fit[valid_curve]
+
+
 def _format_tsai_q_fit_summary(
     label: str,
     fit_result: tuple[float, float, float] | None,
@@ -454,6 +501,24 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     n_err = results_df["carrier_density_err_total_cm3"].to_numpy(dtype=float)
     n_fd_vals = results_df["carrier_density_fd_cm3"].to_numpy(dtype=float)
     n_fd_err = results_df["carrier_density_fd_err_total_cm3"].to_numpy(dtype=float)
+    p_th_w_cm3 = results_df.get(
+        "thermalized_power_w_cm3",
+        pd.Series(np.full(results_df.shape[0], np.nan, dtype=float), index=results_df.index),
+    ).to_numpy(dtype=float)
+    temperature_k = results_df["temperature_k"].to_numpy(dtype=float)
+    temperature_rise_k = temperature_k - TSAI_LATTICE_TEMPERATURE_K
+    q_fit_temperature = _compute_tsai_q_factor_fit(p_th_w_cm3, temperature_rise_k)
+    if q_fit_temperature is None:
+        x_q_fit = np.array([], dtype=float)
+        t_q_fit = np.array([], dtype=float)
+    else:
+        x_q_fit, t_q_fit = _build_tsai_q_fit_temperature_vs_intensity_curve(
+            intensity_w_cm2=x,
+            pth_w_cm3=p_th_w_cm3,
+            temperature_rise_k=temperature_rise_k,
+            slope=q_fit_temperature[0],
+            intercept=q_fit_temperature[1],
+        )
 
     def _set_common_intensity_xlim(ax: plt.Axes) -> None:
         if np.isfinite(x_min_plot) and np.isfinite(x_max_plot) and (x_max_plot > x_min_plot):
@@ -468,15 +533,26 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
     ) -> None:
         ax.errorbar(
             x,
-            results_df["temperature_k"],
+            temperature_k,
             yerr=results_df["temperature_err_total_k"],
-            fmt="o-",
-            lw=1.5,
+            fmt="o",
+            linestyle="none",
             ms=4.5,
             capsize=2.5,
             elinewidth=1.0,
             color="#1565c0",
         )
+        if x_q_fit.size >= 2:
+            ax.plot(
+                x_q_fit,
+                t_q_fit,
+                color="#263238",
+                lw=1.2,
+                ls="--",
+                alpha=0.92,
+                label="Linear fit",
+                zorder=2,
+            )
         style_axes(ax, logx=True)
         ax.set_ylabel(r"Temperature, $T$ (K)")
         if show_xlabel:
@@ -484,6 +560,26 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
         else:
             ax.tick_params(labelbottom=False)
         _set_common_intensity_xlim(ax)
+        q_summary = _format_tsai_q_fit_summary("Exp", q_fit_temperature)
+        if q_summary is not None:
+            q_text_artist = ax.text(
+                0.03,
+                0.97,
+                "Q from linear fit:\n" + q_summary,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=ANNOTATION_FONT_SIZE,
+                bbox={
+                    "facecolor": "white",
+                    "edgecolor": "none",
+                    "boxstyle": "square,pad=0.2",
+                    "alpha": 0.84,
+                },
+            )
+            _raise_annotation(q_text_artist)
+        if x_q_fit.size >= 2:
+            ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=False)
         if show_panel_label:
             _add_panel_label(ax, "(a)")
 
@@ -498,8 +594,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
             x,
             results_df["qfls_ev"],
             yerr=results_df["qfls_err_total_ev"],
-            fmt="o-",
-            lw=1.5,
+            fmt="o",
+            linestyle="none",
             ms=4.5,
             capsize=2.5,
             elinewidth=1.0,
@@ -510,8 +606,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
             x,
             results_df["qfls_effective_ev"],
             yerr=results_df["qfls_effective_err_total_ev"],
-            fmt="s--",
-            lw=1.1,
+            fmt="s",
+            linestyle="none",
             ms=3.5,
             capsize=2.0,
             elinewidth=0.9,
@@ -541,8 +637,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
             x,
             results_df["mu_e_ev"],
             yerr=results_df["mu_e_err_total_ev"],
-            fmt="o-",
-            lw=1.5,
+            fmt="o",
+            linestyle="none",
             ms=4.3,
             capsize=2.5,
             elinewidth=1.0,
@@ -553,8 +649,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
             x,
             results_df["mu_h_ev"],
             yerr=results_df["mu_h_err_total_ev"],
-            fmt="o-",
-            lw=1.5,
+            fmt="o",
+            linestyle="none",
             ms=4.3,
             capsize=2.5,
             elinewidth=1.0,
@@ -565,8 +661,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
             x,
             results_df["mu_e_fd_ev"],
             yerr=results_df["mu_e_fd_err_total_ev"],
-            fmt="s--",
-            lw=1.2,
+            fmt="s",
+            linestyle="none",
             ms=3.9,
             capsize=2.0,
             elinewidth=0.9,
@@ -578,8 +674,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
             x,
             results_df["mu_h_fd_ev"],
             yerr=results_df["mu_h_fd_err_total_ev"],
-            fmt="s--",
-            lw=1.2,
+            fmt="s",
+            linestyle="none",
             ms=3.9,
             capsize=2.0,
             elinewidth=0.9,
@@ -609,8 +705,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
             x,
             n_vals,
             yerr=_safe_log_yerr(y=n_vals, err=n_err),
-            fmt="o-",
-            lw=1.5,
+            fmt="o",
+            linestyle="none",
             ms=4.5,
             capsize=2.5,
             elinewidth=1.0,
@@ -621,8 +717,8 @@ def plot_summary(results_df: pd.DataFrame, outpath: Path) -> None:
             x,
             n_fd_vals,
             yerr=_safe_log_yerr(y=n_fd_vals, err=n_fd_err),
-            fmt="s--",
-            lw=1.2,
+            fmt="s",
+            linestyle="none",
             ms=4.0,
             capsize=2.0,
             elinewidth=0.9,
